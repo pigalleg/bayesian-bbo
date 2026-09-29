@@ -6,7 +6,7 @@ from typing import Callable
 import numpy as np
 
 from .acquisition import expected_improvement, upper_confidence_bound
-from .data import Observations
+from .data import FUNCTION_SPECS, Observations
 from .surrogate import fit_surrogate
 
 
@@ -28,6 +28,18 @@ class OptimisationConfig:
             raise ValueError("Acquisition must be 'ei' or 'ucb'")
         if not np.isfinite(self.xi) or self.xi < 0 or not np.isfinite(self.kappa) or self.kappa < 0:
             raise ValueError("Acquisition parameters must be finite and nonnegative")
+
+
+def remaining_budget(observations: Observations, function_id: int, total_budget: int = 20) -> int:
+    """Number of new queries left across sessions, including saved evaluations."""
+    if function_id not in FUNCTION_SPECS:
+        raise ValueError("Function ID must be between 1 and 8")
+    dimension, initial_count = FUNCTION_SPECS[function_id]
+    if observations.dimension != dimension or len(observations.inputs) < initial_count:
+        raise ValueError("Observations do not match the specified function")
+    if isinstance(total_budget, bool) or not isinstance(total_budget, int) or total_budget < 0:
+        raise ValueError("Total budget must be a nonnegative integer")
+    return max(0, total_budget - (len(observations.inputs) - initial_count))
 
 
 class BayesianOptimizer:

@@ -8,5 +8,6 @@ build/
 dist/
 data/function_*/*.npy
 data/function_*/*.npz
+data/function_*/*.lock
 results/*
 !results/.gitkeep

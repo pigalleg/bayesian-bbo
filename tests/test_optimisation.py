@@ -3,7 +3,7 @@ import pytest
 
 from bayesian_bbo.acquisition import expected_improvement
 from bayesian_bbo.data import Observations
-from bayesian_bbo.optimisation import BayesianOptimizer, OptimisationConfig
+from bayesian_bbo.optimisation import BayesianOptimizer, OptimisationConfig, remaining_budget
 from bayesian_bbo.submission import format_submission
 
 
@@ -60,6 +60,15 @@ def test_run_refits_using_all_observations(monkeypatch):
 
 def test_acquisition_zero_uncertainty():
     assert expected_improvement(np.array([5.]), np.array([0.]), 1.)[0] == 0
+
+
+def test_remaining_budget_after_restart():
+    x = np.arange(24).reshape(12, 2) / 100
+    observations = Observations(x, np.arange(12), 2)
+    assert remaining_budget(observations, 1) == 18
+    assert remaining_budget(observations, 1, total_budget=2) == 0
+    with pytest.raises(ValueError, match="match"):
+        remaining_budget(observations, 3)
 
 
 @pytest.mark.parametrize("point", [[-0.1], [1.0], [0.9999999], [float("nan")], [[0.1]]])

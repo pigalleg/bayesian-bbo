@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import fcntl
 import os
 import tempfile
 
@@ -111,14 +112,16 @@ def _save_observations(path: Path, inputs: np.ndarray, outputs: np.ndarray) -> N
 
 
 def append_observation(root: Path, function_id: int, point: np.ndarray, value: float) -> Observations:
-    """Validate and record a real evaluation in separate, cumulative .npy files."""
-    current = load_observations(root, function_id)
-    updated = current.with_observation(point, value)
+    """Validate and record a real evaluation without changing the original arrays."""
     directory = _directory(root, function_id)
-    initial_count = FUNCTION_SPECS[function_id][1]
-    _save_observations(
-        directory / "added_observations.npz",
-        updated.inputs[initial_count:],
-        updated.outputs[initial_count:],
-    )
+    with (directory / "added_observations.lock").open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = load_observations(root, function_id)
+        updated = current.with_observation(point, value)
+        initial_count = FUNCTION_SPECS[function_id][1]
+        _save_observations(
+            directory / "added_observations.npz",
+            updated.inputs[initial_count:],
+            updated.outputs[initial_count:],
+        )
     return updated

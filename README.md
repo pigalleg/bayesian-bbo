@@ -37,13 +37,17 @@ The same workflow is available in Python:
 from pathlib import Path
 from bayesian_bbo import (
     BayesianOptimizer, OptimisationConfig, append_observation,
-    format_submission, load_observations,
+    format_submission, load_observations, remaining_budget,
 )
 
 root = Path("data")
-optimizer = BayesianOptimizer(load_observations(root, 1), OptimisationConfig(budget=20, seed=42))
-point = optimizer.suggest()
-print(format_submission(point))  # Submit this candidate to the real evaluator.
+observations = load_observations(root, 1)
+optimizer = BayesianOptimizer(
+    observations, OptimisationConfig(budget=remaining_budget(observations, 1), seed=42)
+)
+if optimizer.remaining:
+    point = optimizer.suggest()
+    print(format_submission(point))  # Submit this candidate to the real evaluator.
 # Once the actual scalar result is known:
 # value = ...  # Replace with the real observed output; never invent an evaluation.
 # append_observation(root, 1, point, value)
@@ -51,7 +55,7 @@ print(format_submission(point))  # Submit this candidate to the real evaluator.
 # Repeat suggest/evaluate/append/observe until the budget is exhausted.
 ```
 
-If you restart, `load_observations` includes previously saved evaluations; set `budget` to the **remaining** number of new evaluations for that session. Only record confirmed outputs. `run(evaluate)` is available when a genuine callable evaluator exists; it does not automatically persist results.
+If you restart, `load_observations` includes previously saved evaluations; `remaining_budget` subtracts these from the configurable total (20 by default). Only record confirmed outputs. `run(evaluate)` is available when a genuine callable evaluator exists; it does not automatically persist results.
 
 ## Project evolution
 

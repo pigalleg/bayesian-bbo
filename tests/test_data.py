@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pytest
 
@@ -63,3 +65,15 @@ def test_wrong_count_and_invalid_append(tmp_path):
         initial_data_arrays.with_observation([0.1, 1], 3)
     with pytest.raises(ValueError, match="finite"):
         initial_data_arrays.with_observation([0.1, 0.2], float("nan"))
+
+
+def test_concurrent_appends_retain_every_observation(tmp_path):
+    initial_data(tmp_path)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(
+            lambda i: append_observation(tmp_path, 1, [0.2 + i / 100, 0.3], float(i)),
+            range(8),
+        ))
+    loaded = load_observations(tmp_path, 1)
+    assert len(loaded.inputs) == 18
+    assert set(loaded.outputs[10:]) == set(range(8))
