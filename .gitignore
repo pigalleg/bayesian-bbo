@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+data/function_*/*.npy
+data/function_*/*.npz
+data/function_*/*.lock
+results/*
+!results/.gitkeep
