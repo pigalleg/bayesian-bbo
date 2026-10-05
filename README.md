@@ -1,21 +1,22 @@
 # Bayesian black-box optimisation
 
-This is the **starting point** of an evolving capstone project. The task is to maximise eight unknown scalar-valued functions using input/output evaluations only. Their formulas are not available and must not be inferred from the repository. Inputs have dimension-specific coordinates in `[0, 1)`; submitted coordinates require exactly six decimal places.
+This is the **starting point** of an evolving capstone project. The task is to maximise nine unknown scalar-valued functions using input/output evaluations only. Their formulas are not available and must not be inferred from the repository. Inputs have dimension-specific coordinates in `[0, 1)`; submitted coordinates require exactly six decimal places.
 
-| Function | Dimensions | Provided initial observations |
-| --- | ---: | ---: |
-| 1 | 2 | 10 |
-| 2 | 2 | 10 |
-| 3 | 3 | 15 |
-| 4 | 4 | 30 |
-| 5 | 4 | 20 |
-| 6 | 5 | 20 |
-| 7 | 6 | 30 |
-| 8 | 8 | 40 |
+| Function | Dimensions |
+| --- | ---: |
+| 1 | 2 |
+| 2 | 2 |
+| 3 | 3 |
+| 4 | 4 |
+| 5 | 4 |
+| 6 | 5 |
+| 7 | 6 |
+| 8 | 8 |
+| 9 | 1 |
 
 ## Current baseline
 
-The `src/bayesian_bbo` package loads and validates supplied observations, fits a Gaussian Process surrogate, and proposes unused six-decimal candidates from `[0, 1)` using Expected Improvement (default) or Upper Confidence Bound. The default evaluation budget is 20 **new** queries per function. Each new real observation can be recorded separately from the original data; the next proposal refits on all observations. `Observations` retains the complete input/output history and exposes the best measured input/output (maximisation). The candidate search is a random pool, not an assertion of global optimality. No evaluation service, function formulas, results, or conclusions are supplied here.
+The `src/bayesian_bbo` package loads and validates supplied observations, fits a Gaussian Process surrogate, and proposes unused six-decimal candidates from `[0, 1)` using Expected Improvement (default) or Upper Confidence Bound. The default total evaluation budget is 20 observations per function, including any initial observations already loaded. Each new real observation can be recorded separately from the original data; the next proposal refits on all observations. `Observations` retains the complete input/output history and exposes the best measured input/output (maximisation). The candidate search is a random pool, not an assertion of global optimality. No evaluation service, function formulas, results, or conclusions are supplied here.
 
 ## Install and explore
 

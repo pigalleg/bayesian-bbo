@@ -5,6 +5,8 @@ from bayesian_bbo.acquisition import expected_improvement
 from bayesian_bbo.data import Observations
 from bayesian_bbo.optimisation import BayesianOptimizer, OptimisationConfig, remaining_budget
 from bayesian_bbo.submission import format_submission
+from bayesian_bbo.surrogate import fit_surrogate
+from sklearn.gaussian_process.kernels import RBF
 
 
 @pytest.mark.parametrize(
@@ -46,9 +48,9 @@ def test_run_refits_using_all_observations(monkeypatch):
     sizes = []
     original_fit = optimisation.fit_surrogate
 
-    def tracked_fit(observations, seed):
+    def tracked_fit(observations, seed, kernel=None):
         sizes.append(len(observations.inputs))
-        return original_fit(observations, seed)
+        return original_fit(observations, seed, kernel)
 
     monkeypatch.setattr(optimisation, "fit_surrogate", tracked_fit)
     initial = Observations(np.array([[0.1, 0.2], [0.3, 0.4]]), np.array([0., 1.]), 2)
@@ -58,6 +60,19 @@ def test_run_refits_using_all_observations(monkeypatch):
     assert len(history.outputs) == 4
 
 
+def test_custom_kernel_can_be_injected():
+    observations = Observations(np.array([[0.1], [0.3]]), np.array([0., 1.]), 1)
+
+    model = fit_surrogate(observations, kernel=lambda dimension: RBF(length_scale=np.ones(dimension)))
+    assert isinstance(model.kernel_, RBF)
+
+    optimizer = BayesianOptimizer(
+        observations,
+        OptimisationConfig(budget=1, candidates=16, seed=1, kernel=RBF(length_scale=0.2)),
+    )
+    assert optimizer.suggest().shape == (1,)
+
+
 def test_acquisition_zero_uncertainty():
     assert expected_improvement(np.array([5.]), np.array([0.]), 1.)[0] == 0
 
@@ -65,10 +80,15 @@ def test_acquisition_zero_uncertainty():
 def test_remaining_budget_after_restart():
     x = np.arange(24).reshape(12, 2) / 100
     observations = Observations(x, np.arange(12), 2)
-    assert remaining_budget(observations, 1) == 18
+    assert remaining_budget(observations, 1) == 8
     assert remaining_budget(observations, 1, total_budget=2) == 0
     with pytest.raises(ValueError, match="match"):
         remaining_budget(observations, 3)
+
+
+def test_remaining_budget_uses_actual_initial_count():
+    observations = Observations(np.array([[0.1], [0.3]]), np.array([1., 2.]), 1)
+    assert remaining_budget(observations, 1, total_budget=5) == 3
 
 
 @pytest.mark.parametrize("point", [[-0.1], [1.0], [0.9999999], [float("nan")], [[0.1]]])

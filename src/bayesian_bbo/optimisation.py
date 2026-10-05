@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+from sklearn.gaussian_process.kernels import Kernel
 
 from .acquisition import expected_improvement, upper_confidence_bound
 from .data import FUNCTION_SPECS, Observations
-from .surrogate import fit_surrogate
+from .surrogate import KernelFactory, fit_surrogate
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class OptimisationConfig:
     xi: float = 0.01
     kappa: float = 2.0
     seed: int | None = None
+    kernel: Kernel | KernelFactory | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.budget, bool) or not isinstance(self.budget, int) or self.budget < 0:
@@ -31,15 +33,14 @@ class OptimisationConfig:
 
 
 def remaining_budget(observations: Observations, function_id: int, total_budget: int = 20) -> int:
-    """Number of new queries left across sessions, including saved evaluations."""
+    """Number of new queries left when total_budget includes initial observations."""
     if function_id not in FUNCTION_SPECS:
-        raise ValueError("Function ID must be between 1 and 8")
-    dimension, initial_count = FUNCTION_SPECS[function_id]
-    if observations.dimension != dimension or len(observations.inputs) < initial_count:
+        raise ValueError("Function ID must be between 1 and 9")
+    if observations.dimension != FUNCTION_SPECS[function_id]:
         raise ValueError("Observations do not match the specified function")
     if isinstance(total_budget, bool) or not isinstance(total_budget, int) or total_budget < 0:
         raise ValueError("Total budget must be a nonnegative integer")
-    return max(0, total_budget - (len(observations.inputs) - initial_count))
+    return max(0, total_budget - len(observations.inputs))
 
 
 class BayesianOptimizer:
@@ -62,7 +63,7 @@ class BayesianOptimizer:
     def suggest(self) -> np.ndarray:
         if self.remaining <= 0:
             raise RuntimeError("Evaluation budget exhausted")
-        model = fit_surrogate(self.observations, self.config.seed)
+        model = fit_surrogate(self.observations, self.config.seed, self.config.kernel)
         for _ in range(10):
             pool = self._random.integers(0, 1_000_000, size=(self.config.candidates, self.observations.dimension)) / 1_000_000
             unused = ~np.any(np.all(pool[:, None, :] == self.observations.inputs[None, :, :], axis=2), axis=1)

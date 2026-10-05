@@ -8,10 +8,17 @@ version = "0.1.0"
 description = "A developing Bayesian black-box optimisation capstone"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy==2.2.6",
-    "scipy==1.15.3",
-    "scikit-learn==1.6.1",
-    "matplotlib==3.10.3",
+    "numpy==2.2.6; python_version < '3.14'",
+    "numpy==2.5.3; python_version >= '3.14'",
+    "scipy==1.15.3; python_version < '3.14'",
+    "scipy==1.18.1; python_version >= '3.14'",
+    "scikit-learn==1.6.1; python_version < '3.14'",
+    "scikit-learn==1.9.1; python_version >= '3.14'",
+    "matplotlib==3.10.3; python_version < '3.14'",
+    "matplotlib==3.11.2; python_version >= '3.14'",
+    "plotly>=6,<7",
+    "pandas==2.3.3; python_version < '3.11'",
+    "pandas==3.0.6; python_version >= '3.11'",
 ]
 
 [project.optional-dependencies]
