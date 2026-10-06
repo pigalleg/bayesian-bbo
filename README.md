@@ -32,6 +32,10 @@ jupyter notebook
 
 See [data/README.md](data/README.md) for the required file layout. Initial files are **not** included in this repository. After placing your provided files, open `notebooks/01_data_exploration.ipynb`, then `02_function_1_baseline.ipynb`. Notebook `03_other_functions.ipynb` provides a configurable starting point for later functions. The notebooks do not execute objective evaluations automatically.
 
+## Documentation
+
+See [doc/README.md](doc/README.md) for the benchmark function descriptions and the Week 2 expected-versus-observed output comparison notes.
+
 The same workflow is available in Python:
 
 ```python
