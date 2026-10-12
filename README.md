@@ -55,7 +55,7 @@ if optimizer.remaining:
     print(format_submission(point))  # Submit this candidate to the real evaluator.
 # Once the actual scalar result is known:
 # value = ...  # Replace with the real observed output; never invent an evaluation.
-# append_observation(root, 1, point, value)
+# append_observation(root, 1, point, value, week=<current week>)
 # optimizer.observe(point, value)
 # Repeat suggest/evaluate/append/observe until the budget is exhausted.
 ```

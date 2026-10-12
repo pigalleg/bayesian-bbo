@@ -8,18 +8,20 @@ from sklearn.gaussian_process.kernels import Kernel
 
 from .acquisition import expected_improvement, upper_confidence_bound
 from .data import FUNCTION_SPECS, Observations
+from .settings import CONFIG
 from .surrogate import KernelFactory, fit_surrogate
 
 
 @dataclass(frozen=True)
 class OptimisationConfig:
     budget: int = 20
-    candidates: int = 2048
+    candidates: int = CONFIG["candidates"]
     acquisition: str = "ei"
     xi: float = 0.01
     kappa: float = 2.0
-    seed: int | None = None
+    seed: int | None = CONFIG["random_state"]
     kernel: Kernel | KernelFactory | None = None
+    best: float | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.budget, bool) or not isinstance(self.budget, int) or self.budget < 0:
@@ -30,12 +32,14 @@ class OptimisationConfig:
             raise ValueError("Acquisition must be 'ei' or 'ucb'")
         if not np.isfinite(self.xi) or self.xi < 0 or not np.isfinite(self.kappa) or self.kappa < 0:
             raise ValueError("Acquisition parameters must be finite and nonnegative")
+        if self.best is not None and not np.isfinite(self.best):
+            raise ValueError("Best must be finite when provided")
 
 
 def remaining_budget(observations: Observations, function_id: int, total_budget: int = 20) -> int:
     """Number of new queries left when total_budget includes initial observations."""
     if function_id not in FUNCTION_SPECS:
-        raise ValueError("Function ID must be between 1 and 9")
+        raise ValueError("Function ID must be between 1 and 8")
     if observations.dimension != FUNCTION_SPECS[function_id]:
         raise ValueError("Observations do not match the specified function")
     if isinstance(total_budget, bool) or not isinstance(total_budget, int) or total_budget < 0:
@@ -61,6 +65,11 @@ class BayesianOptimizer:
         return self.observations
 
     def suggest(self) -> np.ndarray:
+        point, _, _ = self.suggest_with_prediction()
+        return point
+
+    def suggest_with_prediction(self) -> tuple[np.ndarray, float, float]:
+        """Return the suggested point and its predictive mean and std."""
         if self.remaining <= 0:
             raise RuntimeError("Evaluation budget exhausted")
         model = fit_surrogate(self.observations, self.config.seed, self.config.kernel)
@@ -71,10 +80,14 @@ class BayesianOptimizer:
             if len(pool):
                 mean, std = model.predict(pool, return_std=True)
                 if self.config.acquisition == "ei":
-                    scores = expected_improvement(mean, std, self.observations.best_output, self.config.xi)
+                    best = self.config.best
+                    if best is None:
+                        best = self.observations.best_output
+                    scores = expected_improvement(mean, std, best, self.config.xi)
                 else:
                     scores = upper_confidence_bound(mean, std, self.config.kappa)
-                return pool[int(np.argmax(scores))].copy()
+                selected = int(np.argmax(scores))
+                return pool[selected].copy(), float(mean[selected]), float(std[selected])
         raise RuntimeError("Could not find an unused candidate")
 
     def observe(self, point: np.ndarray, value: float) -> Observations:

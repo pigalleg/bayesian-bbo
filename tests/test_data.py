@@ -5,12 +5,17 @@ import numpy as np
 import pytest
 
 from bayesian_bbo.data import (
+    FUNCTION_SPECS,
     Observations,
     append_observation,
     append_weekly_batch,
     load_observations,
     save_predictions,
 )
+
+
+def test_function_specs_contains_only_functions_one_through_eight():
+    assert tuple(FUNCTION_SPECS) == tuple(range(1, 9))
 
 
 def initial_data(tmp_path):
@@ -28,7 +33,7 @@ def test_load_append_and_preserve_originals(tmp_path):
     initial = load_observations(tmp_path, 1)
     assert initial.inputs.shape == (10, 2)
     assert initial.outputs.shape == (10,)
-    updated = append_observation(tmp_path, 1, [0.2, 0.3], 12.0)
+    updated = append_observation(tmp_path, 1, [0.2, 0.3], 12.0, week=2)
     assert updated.best_output == 12
     np.testing.assert_array_equal(updated.best_input, [0.2, 0.3])
     assert len(load_observations(tmp_path, 1).inputs) == 11
@@ -37,7 +42,20 @@ def test_load_append_and_preserve_originals(tmp_path):
     np.testing.assert_array_equal(np.load(tmp_path / "function_1" / "initial_inputs.npy"), x)
     np.testing.assert_array_equal(np.load(tmp_path / "function_1" / "initial_outputs.npy"), y)
     with pytest.raises(ValueError, match="Duplicate"):
-        append_observation(tmp_path, 1, [0.2, 0.3], 13)
+        append_observation(tmp_path, 1, [0.2, 0.3], 13, week=2)
+
+
+def test_load_observations_without_function_id_defaults_to_one_dimension(tmp_path):
+    x = np.array([[0.1], [0.3], [0.7]])
+    y = np.array([1.0, 2.0, 3.0])
+    np.save(tmp_path / "initial_inputs.npy", x)
+    np.save(tmp_path / "initial_outputs.npy", y)
+
+    observations = load_observations(tmp_path)
+
+    assert observations.dimension == 1
+    np.testing.assert_array_equal(observations.inputs, x)
+    np.testing.assert_array_equal(observations.outputs, y)
 
 
 def test_save_predictions_preserves_values_and_submission_precision(tmp_path):
@@ -65,8 +83,8 @@ def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
     stds_path = tmp_path / "stds.json"
     stds_path.write_text("[0.5]\n", encoding="utf-8")
 
-    appended = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path)
-    repeated = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path)
+    appended = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
+    repeated = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
 
     assert len(appended[1].inputs) == 11
     assert len(repeated[1].inputs) == 11
@@ -86,9 +104,9 @@ def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
 
     outputs_path.write_text("[13.0]\n", encoding="utf-8")
     with pytest.raises(ValueError, match="different output"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
 
-    updated = append_observation(tmp_path, 1, [0.4, 0.5], 13.0, std=0.25)
+    updated = append_observation(tmp_path, 1, [0.4, 0.5], 13.0, week=2, std=0.25)
     assert updated.expected_outputs[-2] == 11.5
     assert np.isnan(updated.expected_outputs[-1])
     np.testing.assert_array_equal(updated.stds[-2:], [0.5, 0.25])
@@ -97,7 +115,7 @@ def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
     outputs_path.write_text("[12.0]\n", encoding="utf-8")
     expected_path.write_text("[12.5]\n", encoding="utf-8")
     with pytest.raises(ValueError, match="different expected output"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
 
 
 def test_weekly_stds_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
@@ -108,31 +126,33 @@ def test_weekly_stds_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
     inputs_path.write_text("[[0.2, 0.3]]", encoding="utf-8")
     outputs_path.write_text("[12.0]", encoding="utf-8")
     expected_path.write_text("[11.5]", encoding="utf-8")
-    imported = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path)[1]
+    imported = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)[1]
     assert np.isnan(imported.stds).all()
 
     aggregate = tmp_path / "function_1" / "all_observations.npz"
     np.savez(
         aggregate, inputs=imported.inputs, outputs=imported.outputs,
-        expected_outputs=imported.expected_outputs,
+        expected_outputs=imported.expected_outputs, weeks=imported.weeks,
     )
     assert np.isnan(load_observations(tmp_path, 1).stds).all()
     stds_path = tmp_path / "uncertainties.json"
     stds_path.write_text("[0.5]", encoding="utf-8")
     updated = append_weekly_batch(
-        tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path,
+        tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path, week=2,
     )[1]
     assert len(updated.outputs) == len(imported.outputs)
     assert updated.stds[-1] == 0.5
     assert np.isnan(updated.stds[:-1]).all()
     before = aggregate.read_bytes()
-    append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path)
+    append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path, week=2)
     assert aggregate.read_bytes() == before
-    without_stds = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path)[1]
+    without_stds = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)[1]
     assert without_stds.stds[-1] == 0.5
     stds_path.write_text("[0.6]", encoding="utf-8")
     with pytest.raises(ValueError, match="different standard deviation"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path)
+        append_weekly_batch(
+            tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path, week=2,
+        )
     assert aggregate.read_bytes() == before
 
 
@@ -148,7 +168,7 @@ def test_weekly_stds_reject_invalid_values_before_saving(tmp_path, contents):
     (tmp_path / "stds.json").write_text(contents, encoding="utf-8")
 
     with pytest.raises(ValueError, match="standard deviations"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
     assert not (tmp_path / "function_1" / "all_observations.npz").exists()
 
 
@@ -170,7 +190,7 @@ def test_weekly_batch_rejects_invalid_json(tmp_path, contents):
     expected_path.write_text("[11.5]", encoding="utf-8")
 
     with pytest.raises(ValueError, match="weekly data file|Weekly data file"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
     assert not (tmp_path / "function_1" / "all_observations.npz").exists()
 
 
@@ -194,6 +214,47 @@ def test_invalid_initial_data(tmp_path, inputs, outputs):
         load_observations(tmp_path, 1)
 
 
+def test_up_to_week_filters_rows(tmp_path):
+    initial_data(tmp_path)
+    append_observation(tmp_path, 1, [0.4, 0.5], 13.0, week=2)
+    append_observation(tmp_path, 1, [0.6, 0.7], 14.0, week=3)
+
+    everything = load_observations(tmp_path, 1)
+    assert set(everything.weeks.tolist()) == {1, 2, 3}
+    assert len(load_observations(tmp_path, 1, up_to_week=3).inputs) == 12
+    through_two = load_observations(tmp_path, 1, up_to_week=2)
+    assert len(through_two.inputs) == 11
+    assert through_two.weeks.max() == 2
+    assert len(load_observations(tmp_path, 1, up_to_week=1).inputs) == 10
+
+
+def test_weekly_folder_infers_week(tmp_path):
+    initial_data(tmp_path)
+    batch = tmp_path / "week_2"
+    batch.mkdir()
+    (batch / "inputs.json").write_text("[[0.2, 0.3]]", encoding="utf-8")
+    (batch / "outputs.json").write_text("[12.0]", encoding="utf-8")
+    (batch / "expected_outputs.json").write_text("[11.5]", encoding="utf-8")
+
+    imported = append_weekly_batch(
+        tmp_path, batch / "inputs.json", batch / "outputs.json", batch / "expected_outputs.json",
+    )[1]
+
+    assert imported.weeks[-1] == 2
+    assert load_observations(tmp_path, 1).weeks[-1] == 2
+
+
+def test_missing_week_labels_are_rejected(tmp_path):
+    initial_data(tmp_path)
+    np.savez(
+        tmp_path / "function_1" / "all_observations.npz",
+        inputs=np.array([[0.2, 0.3]]), outputs=np.array([1.0]),
+    )
+    with pytest.raises(ValueError, match="Missing week labels"):
+        load_observations(tmp_path, 1)
+
+
+
 def test_wrong_count_and_invalid_append(tmp_path):
     initial_data(tmp_path)
     directory = tmp_path / "function_1"
@@ -201,12 +262,16 @@ def test_wrong_count_and_invalid_append(tmp_path):
     np.save(directory / "initial_outputs.npy", np.zeros(9))
     observations = load_observations(tmp_path, 1)
     assert len(observations.inputs) == 9
-    initial_data_arrays = Observations(np.zeros((2, 2)), np.array([1, 2]), 2)
+    initial_data_arrays = Observations(
+        np.zeros((2, 2)), np.array([1, 2]), 2, weeks=np.ones(2, dtype=int),
+    )
     with pytest.raises(ValueError, match="dimension"):
-        initial_data_arrays.with_observation([0.1], 3)
+        initial_data_arrays.with_observation([0.1], 3, week=2)
     with pytest.raises(ValueError, match="within"):
-        initial_data_arrays.with_observation([0.1, 1], 3)
+        initial_data_arrays.with_observation([0.1, 1], 3, week=2)
     with pytest.raises(ValueError, match="finite"):
-        initial_data_arrays.with_observation([0.1, 0.2], float("nan"))
+        initial_data_arrays.with_observation([0.1, 0.2], float("nan"), week=2)
+    with pytest.raises(ValueError, match="Week must be a positive integer"):
+        initial_data_arrays.with_observation([0.1, 0.2], 3, week=0)
 
 

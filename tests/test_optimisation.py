@@ -2,11 +2,49 @@ import numpy as np
 import pytest
 
 from bayesian_bbo.acquisition import expected_improvement
+from bayesian_bbo import CONFIG
 from bayesian_bbo.data import Observations
 from bayesian_bbo.optimisation import BayesianOptimizer, OptimisationConfig, remaining_budget
+from bayesian_bbo.settings import CONFIG_PATH, load_config
 from bayesian_bbo.submission import format_submission
 from bayesian_bbo.surrogate import fit_surrogate
 from sklearn.gaussian_process.kernels import RBF
+
+
+def test_shared_config_loads_yaml_values(tmp_path):
+    assert CONFIG_PATH.is_file()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "normalize_y: false\nn_restarts_optimizer: 3\nrandom_state: 7\ncandidates: 16\n",
+        encoding="utf-8",
+    )
+
+    assert load_config(config_path) == {
+        "normalize_y": False,
+        "n_restarts_optimizer": 3,
+        "random_state": 7,
+        "candidates": 16,
+    }
+    assert CONFIG == {
+        "normalize_y": True,
+        "n_restarts_optimizer": 10,
+        "random_state": 42,
+        "candidates": 2048,
+    }
+
+
+def test_optimizer_and_surrogate_defaults_use_shared_config():
+    observations = Observations(np.array([[0.1], [0.3]]), np.array([0., 1.]), 1)
+    optimizer = BayesianOptimizer(observations)
+    model = fit_surrogate(
+        observations,
+        kernel=RBF(length_scale=0.2, length_scale_bounds="fixed"),
+    )
+
+    assert optimizer.config.seed == CONFIG["random_state"]
+    assert optimizer.config.candidates == CONFIG["candidates"]
+    assert model.normalize_y is CONFIG["normalize_y"]
+    assert model.n_restarts_optimizer == CONFIG["n_restarts_optimizer"]
 
 
 @pytest.mark.parametrize(
@@ -73,6 +111,33 @@ def test_custom_kernel_can_be_injected():
     assert optimizer.suggest().shape == (1,)
 
 
+def test_suggest_with_prediction_returns_selected_point_and_prediction():
+    observations = Observations(np.array([[0.1], [0.3]]), np.array([0., 1.]), 1)
+    optimizer = BayesianOptimizer(
+        observations,
+        OptimisationConfig(
+            budget=1,
+            candidates=32,
+            seed=1,
+            acquisition="ucb",
+            kernel=RBF(length_scale=0.2, length_scale_bounds="fixed"),
+        ),
+    )
+
+    point, mean, std = optimizer.suggest_with_prediction()
+
+    assert point.shape == (1,)
+    assert 0 <= point[0] < 1
+    assert np.isfinite(mean)
+    assert np.isfinite(std) and std >= 0
+
+
+def test_config_accepts_finite_expected_improvement_threshold():
+    assert OptimisationConfig(best=3.5).best == 3.5
+    with pytest.raises(ValueError, match="Best must be finite"):
+        OptimisationConfig(best=float("nan"))
+
+
 def test_acquisition_zero_uncertainty():
     assert expected_improvement(np.array([5.]), np.array([0.]), 1.)[0] == 0
 
@@ -87,7 +152,7 @@ def test_remaining_budget_after_restart():
 
 
 def test_remaining_budget_uses_actual_initial_count():
-    observations = Observations(np.array([[0.1], [0.3]]), np.array([1., 2.]), 1)
+    observations = Observations(np.array([[0.1, 0.2], [0.3, 0.4]]), np.array([1., 2.]), 2)
     assert remaining_budget(observations, 1, total_budget=5) == 3
 
 

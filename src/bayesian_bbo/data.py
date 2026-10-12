@@ -1,6 +1,7 @@
 """Read original and cumulative observations without changing the original files."""
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,8 +22,13 @@ FUNCTION_SPECS = {
     6: 5,
     7: 6,
     8: 8,
-    9: 1,
 }
+
+
+def _checked_week(week: object) -> int:
+    if isinstance(week, bool) or not isinstance(week, (int, np.integer)) or week < 1:
+        raise ValueError("Week must be a positive integer")
+    return int(week)
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,7 @@ class Observations:
     dimension: int
     expected_outputs: np.ndarray | None = None
     stds: np.ndarray | None = None
+    weeks: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         x = np.asarray(self.inputs, dtype=float)
@@ -72,6 +79,10 @@ class Observations:
         object.__setattr__(self, "outputs", y.copy())
         object.__setattr__(self, "expected_outputs", expected.copy())
         object.__setattr__(self, "stds", stds.copy())
+        weeks = np.ones(len(x), dtype=int) if self.weeks is None else np.asarray(self.weeks)
+        if weeks.ndim != 1 or len(weeks) != len(x) or not np.issubdtype(weeks.dtype, np.integer) or np.any(weeks < 1):
+            raise ValueError("Weeks must contain one positive integer per input")
+        object.__setattr__(self, "weeks", weeks.astype(int))
 
     @property
     def best_index(self) -> int:
@@ -85,48 +96,79 @@ class Observations:
     def best_output(self) -> float:
         return float(self.outputs[self.best_index])
 
-    def with_observation(self, point: np.ndarray, value: float, *, std: float = np.nan) -> "Observations":
+    def with_observation(
+        self, point: np.ndarray, value: float, *, week: int | None = None, std: float = np.nan,
+    ) -> "Observations":
+        """Return a copy with one new row; without a week, use the newest week already recorded."""
         candidate = np.asarray(point, dtype=float)
         if candidate.shape != (self.dimension,):
             raise ValueError("Point must have the configured dimension")
         if np.any(np.all(self.inputs == candidate, axis=1)):
             raise ValueError("Duplicate observation")
+        row_week = int(self.weeks.max()) if week is None else _checked_week(week)
         return Observations(
             np.vstack((self.inputs, candidate)),
             np.append(self.outputs, value),
             self.dimension,
             np.append(self.expected_outputs, np.nan),
             np.append(self.stds, std),
+            np.append(self.weeks, row_week),
+        )
+
+    def through_week(self, week: int) -> "Observations":
+        keep = self.weeks <= _checked_week(week)
+        return Observations(
+            self.inputs[keep],
+            self.outputs[keep],
+            self.dimension,
+            self.expected_outputs[keep],
+            self.stds[keep],
+            self.weeks[keep],
         )
 
 
 def _directory(root: Path, function_id: int) -> Path:
     if function_id not in FUNCTION_SPECS:
-        raise ValueError("Function ID must be between 1 and 9")
+        raise ValueError("Function ID must be between 1 and 8")
     return Path(root) / f"function_{function_id}"
 
 
-def load_observations(root: Path, function_id: int) -> Observations:
-    """Load the aggregate file, or the initial arrays before the first import."""
-    directory = _directory(root, function_id)
-    dimension = FUNCTION_SPECS[function_id]
+def load_observations(
+    root: Path, function_id: int | None = None, *, up_to_week: int | None = None,
+) -> Observations:
+    """Load observations; without an ID, read a one-dimensional dataset at root."""
+    if function_id is None:
+        directory = Path(root)
+        dimension = 1
+    else:
+        directory = _directory(root, function_id)
+        dimension = FUNCTION_SPECS[function_id]
     aggregate = directory / "all_observations.npz"
     if aggregate.exists():
         with np.load(aggregate, allow_pickle=False) as recorded:
+            if "weeks" not in recorded.files:
+                raise ValueError(f"Missing week labels; run scripts/add_week_labels.py: {aggregate}")
             expected = recorded["expected_outputs"] if "expected_outputs" in recorded.files else None
             stds = recorded["stds"] if "stds" in recorded.files else None
-            return Observations(
+            observations = Observations(
                 recorded["inputs"],
                 recorded["outputs"],
                 dimension,
                 expected,
                 stds,
+                recorded["weeks"],
             )
-    return Observations(
-        np.load(directory / "initial_inputs.npy", allow_pickle=False),
-        np.load(directory / "initial_outputs.npy", allow_pickle=False),
-        dimension,
-    )
+    else:
+        initial_inputs = np.load(directory / "initial_inputs.npy", allow_pickle=False)
+        observations = Observations(
+            initial_inputs,
+            np.load(directory / "initial_outputs.npy", allow_pickle=False),
+            dimension,
+            weeks=np.ones(len(initial_inputs), dtype=int),
+        )
+    if up_to_week is None:
+        return observations
+    return observations.through_week(up_to_week)
 
 
 def save_predictions(expected_outputs, suggested_points, standard_deviations, directory):
@@ -186,6 +228,7 @@ def _save_observations(
     outputs: np.ndarray,
     expected_outputs: np.ndarray,
     stds: np.ndarray,
+    weeks: np.ndarray,
 ) -> None:
     with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz", delete=False) as temp:
         temporary = Path(temp.name)
@@ -196,6 +239,7 @@ def _save_observations(
                 outputs=outputs,
                 expected_outputs=expected_outputs,
                 stds=stds,
+                weeks=weeks,
             )
             temp.flush()
             os.fsync(temp.fileno())
@@ -205,18 +249,19 @@ def _save_observations(
 
 
 def append_observation(
-    root: Path, function_id: int, point: np.ndarray, value: float, *, std: float = np.nan,
+    root: Path, function_id: int, point: np.ndarray, value: float, *, week: int, std: float = np.nan,
 ) -> Observations:
     """Validate and record a real evaluation without changing the original arrays."""
     directory = _directory(root, function_id)
     current = load_observations(root, function_id)
-    updated = current.with_observation(point, value, std=std)
+    updated = current.with_observation(point, value, week=week, std=std)
     _save_observations(
         directory / "all_observations.npz",
         updated.inputs,
         updated.outputs,
         updated.expected_outputs,
         updated.stds,
+        updated.weeks,
     )
     return updated
 
@@ -229,8 +274,15 @@ def append_weekly_batch(
     function_ids: Sequence[int] | None = None,
     *,
     stds_path: Path | None = None,
+    week: int | None = None,
 ) -> dict[int, Observations]:
     """Import a JSON batch, including neighboring stds.json when available."""
+    if week is None:
+        match = re.fullmatch(r"week_(\d+)", Path(inputs_path).parent.name)
+        if match is None:
+            raise ValueError("Pass week=... or keep inputs.json inside a week_N folder")
+        week = int(match.group(1))
+    week = _checked_week(week)
     input_rows = _load_json_values(Path(inputs_path))
     output_rows = _load_json_values(Path(outputs_path))
     expected_rows = _load_json_values(Path(expected_outputs_path))
@@ -275,6 +327,8 @@ def append_weekly_batch(
         )
         matches = np.all(current.inputs == candidate.inputs[0], axis=1)
         if np.any(matches):
+            if np.any(current.weeks[matches] != week):
+                raise ValueError(f"Function {function_id} already has this input in another week")
             if not np.all(current.outputs[matches] == candidate.outputs[0]):
                 raise ValueError(
                     f"Function {function_id} already has this input with a different output"
@@ -307,9 +361,12 @@ def append_weekly_batch(
                 current.dimension,
                 expected_outputs,
                 stds,
+                current.weeks,
             )
         else:
-            updated = current.with_observation(candidate.inputs[0], candidate.outputs[0], std=std_value)
+            updated = current.with_observation(
+                candidate.inputs[0], candidate.outputs[0], week=week, std=std_value,
+            )
             expected_outputs = updated.expected_outputs.copy()
             expected_outputs[-1] = candidate.expected_outputs[0]
             updated = Observations(
@@ -318,6 +375,7 @@ def append_weekly_batch(
                 updated.dimension,
                 expected_outputs,
                 updated.stds,
+                updated.weeks,
             )
         pending[function_id] = updated
         results[function_id] = updated
@@ -330,5 +388,6 @@ def append_weekly_batch(
             observations.outputs,
             observations.expected_outputs,
             observations.stds,
+            observations.weeks,
         )
     return results

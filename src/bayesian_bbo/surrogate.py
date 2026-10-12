@@ -7,6 +7,7 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, Kernel, Matern, WhiteKernel
 
 from .data import Observations
+from .settings import CONFIG
 
 
 KernelFactory = Callable[[int], Kernel]
@@ -14,8 +15,11 @@ KernelFactory = Callable[[int], Kernel]
 
 def fit_surrogate(
     observations: Observations,
-    random_state: int | None = None,
+    random_state: int | None = CONFIG["random_state"],
     kernel: Kernel | KernelFactory | None = None,
+    *,
+    normalize_y: bool = CONFIG["normalize_y"],
+    n_restarts_optimizer: int = CONFIG["n_restarts_optimizer"],
 ) -> GaussianProcessRegressor:
     if kernel is None:
         selected_kernel = (
@@ -27,6 +31,11 @@ def fit_surrogate(
         selected_kernel = kernel
     else:
         selected_kernel = kernel(observations.dimension)
-    model = GaussianProcessRegressor(kernel=selected_kernel, normalize_y=True, random_state=random_state)
+    model = GaussianProcessRegressor(
+        kernel=selected_kernel,
+        normalize_y=normalize_y,
+        n_restarts_optimizer=n_restarts_optimizer,
+        random_state=random_state,
+    )
     model.fit(observations.inputs, observations.outputs)
     return model
