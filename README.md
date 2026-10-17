@@ -1,8 +1,24 @@
-# Bayesian black-box optimisation
+# Bayesian Black-Box Optimisation (BBO)
 
-This is the **starting point** of an evolving capstone project. The task is to maximise nine unknown scalar-valued functions using input/output evaluations only. Their formulas are not available and must not be inferred from the repository. Inputs have dimension-specific coordinates in `[0, 1)`; submitted coordinates require exactly six decimal places.
+## 1. Project overview
 
-| Function | Dimensions |
+This BBO capstone explores how to find high-performing inputs for unknown functions when evaluations are limited and their formulas and gradients are unavailable. The main challenge covers eight scalar-valued functions with two to eight input dimensions.
+
+The high-level loop is **observe, model, propose, evaluate and update**. A Gaussian Process (GP) learns from previous input/output pairs, estimates both performance and uncertainty, and guides the next query. The aim is to spend scarce evaluations more effectively than an exhaustive search.
+
+This resembles real-world ML hyperparameter tuning, where training a model can be expensive and the relationship between settings and validation performance is unknown. Similar problems arise in experimental design, chemical-process tuning and engineering simulation; see the [benchmark descriptions](doc/benchmark-functions.md).
+
+### Career relevance
+
+The project develops practical skills for ML engineering and applied data science: sample-efficient experimentation, uncertainty-aware decisions, model validation, reproducible Python workflows and communicating the limits of an analysis. It provides a concrete portfolio example of making defensible decisions with sparse data rather than relying only on predictive accuracy.
+
+## 2. Inputs and outputs
+
+### Inputs
+
+Each query is a numeric vector with coordinates in **`[0, 1)`**, submitted to exactly **six decimal places**.
+
+| Function | Input dimensions |
 | --- | ---: |
 | 1 | 2 |
 | 2 | 2 |
@@ -12,56 +28,84 @@ This is the **starting point** of an evolving capstone project. The task is to m
 | 6 | 5 |
 | 7 | 6 |
 | 8 | 8 |
-| 9 | 1 |
 
-## Current baseline
+For example, the two-dimensional candidate `[0.702637, 0.500000]` is submitted as:
 
-The `src/bayesian_bbo` package loads and validates supplied observations, fits a Gaussian Process surrogate, and proposes unused six-decimal candidates from `[0, 1)` using Expected Improvement (default) or Upper Confidence Bound. The default total evaluation budget is 20 observations per function, including any initial observations already loaded. Each new real observation can be recorded separately from the original data; the next proposal refits on all observations. `Observations` retains the complete input/output history and exposes the best measured input/output (maximisation). The candidate search is a random pool, not an assertion of global optimality. No evaluation service, function formulas, results, or conclusions are supplied here.
+```text
+0.702637-0.500000
+```
 
-## Install and explore
+Initial observations are supplied as input arrays of shape `(n, d)` and output arrays of shape `(n,)`. Weekly input files contain one vector per function in function-ID order. The package also defines a one-dimensional Function 9 for separate experimentation; it is outside the eight-function capstone workflow.
 
-Use Python 3.10+:
+### Outputs
+
+- **The evaluator (external)** returns one real scalar score for each query. Higher is better; the score's scale differs across functions.
+- **The GP surrogate (internal to this repository)** returns a predicted mean and standard deviation at an input.
+- **The optimizer (internal to this repository)** returns a suggested candidate, its predicted mean and uncertainty, and an acquisition score such as Expected Improvement (EI). Predictions are not measured results.
+
+The workflow exports [inputs.json](data/weekly_updates/week_4/inputs.json) and [predictions.json](data/weekly_updates/week_4/predictions.json). Predictions include expected outputs, standard deviations, expected best-so-far, acquisition scores and the settings used to calculate them. Once the external evaluator returns the actual scores, these are recorded separately in `outputs.json` for the corresponding week (for example, [week-3 outputs.json](data/weekly_updates/week_3/outputs.json)), in the same function order as the inputs. These are measured outcomes, not surrogate predictions. See [data placement and provenance](data/README.md) and [data flow](doc/data-flow.md) for schemas and validation rules.
+
+## 3. Challenge objectives
+
+The objective is to **maximise each function**, tracking the best *measured* output so far. For tasks naturally expressed as minimisation, the supplied objective is already framed so that higher is better; the notebooks do not invent additional transformations.
+
+The main constraints are:
+
+- **Limited, delayed feedback:** the capstone allows a total of **13 queries**. The current workflow selects one query per function per submission round and waits for external results. Notebooks do not evaluate the real objectives automatically.
+- **Unknown structure:** formulas and gradients are unavailable. Nonlinearity, local maxima, sparse signals and possible observation noise make extrapolation uncertain.
+- **Growing dimensionality:** even a large random candidate pool sparsely covers an eight-dimensional space.
+- **Small samples:** fitted length scales, uncertainty estimates and cross-validation rankings can be unstable.
+- **Valid queries and honest records:** candidates must satisfy input constraints; only confirmed evaluator outputs are recorded as observations.
+
+Success is judged by actual best-so-far improvement and useful learning from evaluations, not by high predicted means or acquisition scores alone. **No global-optimality claim can be made**.
+
+## 4. Technical approach
+
+### Surrogate and acquisition strategy
+
+The implemented approach is **Gaussian Process regression with Bayesian optimisation**. A GP provides both a predicted response and uncertainty, allowing acquisition functions to balance:
+
+- **Exploitation:** query where the predicted response is promising.
+- **Exploration:** query where uncertainty could conceal an improvement.
+
+The early baseline uses Upper Confidence Bound (UCB). Later analysis uses EI, with an improvement threshold `xi = alpha * std(y)`, with `std(y)` corresponding to the standard deviation of the observed values. This expression allows to account for different output scales. Increasing xi changes acquisition preferences, not GP predictions at fixed inputs. Alpha so far is heuristic choice, not an independently validated optimum.
+
+### Living record of the first three submission decisions
+
+The repository labels exported rounds by their **evaluation week**: week-1 analysis prepares week-2 inputs, week-2 analysis prepares week-3 inputs, and week-3 analysis prepares week-4 inputs.
+
+| Submission decision | Strategy and rationale |
+| --- | --- |
+| **Week-2** | Use the supplied initial observations, an RBF GP with fixed length scale 0.1, and UCB with `kappa = 1.96`. Inspect the low-dimensional plots to understand predicted peaks and uncertainty. See the [week-1 notebook](notebooks/week_1/week_1.ipynb). |
+| **Week-3** | Compare kernels, length-scale caps and alpha sensitivity. Select Matérn 3/2 for EI suggestions, prioritising within-function held-out cross-validation over in-sample likelihood when they disagree. Use alpha 0.1 and per-function caps. The decision record reports a 2,048-candidate pool; scripts reading shared settings may now use a different pool. See the [week-2 workflow](doc/week-2-workflow.md). |
+| **Week-4 candidates, exported but not yet evaluated** | Review best-so-far progress and calibration, increase the search pool to 1,000,000 after observing candidate sensitivity, and choose alpha 0.1 for F1-F5 and 0.2 for F6-F8 by visual inspection. Override EI with diagnostic queries for F1-F2; use optimizer-selected pool EI maxima for F3-F8. See the [week-3 workflow](doc/week-3-workflow.md). |
+
+The kernel comparison is evidence about predictive performance, not proof of optimisation performance. Matérn 3/2 is retained as a consistent suggestion model despite per-function exceptions and disagreement between likelihood and cross-validation.
+
+### Why combine Bayesian suggestions with heuristics?
+
+Functions 1-3 have fitted directions that are nearly flat because some length scales reach their upper bounds. That does not establish that the real functions ignore those inputs; Function 1's fitted short axis even switches after adding an observation.
+
+For the next round:
+
+- **F1: `(0.550000, 0.681526)`** tests whether the isolated negative feature persists along x1. This is an information-seeking query, not exploitation of a negative value in a maximisation task.
+- **F2: `(0.702637, 0.500000)`** holds a promising x1 fixed and tests an intermediate x2 between widely separated high-response observations.
+- **F3-F8:** retain the optimizer's EI-maximising candidates from the finite pool.
+
+The distinguishing feature is not a claim of a novel optimizer, but a combination of reproducible Bayesian search, sensitivity checks and explicit diagnostic overrides when the surrogate's interpretation is weak.
+
+### Reproduce and continue
+
+The reusable code is in [src/bayesian_bbo](src/bayesian_bbo); shared defaults are in [config.yaml](src/bayesian_bbo/config.yaml). Week-3 notebooks read shared length caps, while week-2 notebooks retain historical hardcoded caps.
+
+Using an existing suitable Python 3.10+ environment, install and validate with:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 python -m pip install -e '.[dev]'
 python -m pytest
 jupyter notebook
 ```
 
-See [data/README.md](data/README.md) for the required file layout. Initial files are **not** included in this repository. After placing your provided files, open `notebooks/01_data_exploration.ipynb`, then `02_function_1_baseline.ipynb`. Notebook `03_other_functions.ipynb` provides a configurable starting point for later functions. The notebooks do not execute objective evaluations automatically.
+Place supplied observations as described in [data/README.md](data/README.md). Follow the [week-3 notebook order](doc/week-3-workflow.md#notebook-order) for diagnostics, alpha selection and final exports. The evaluator is external; do not substitute predictions for actual outcomes or overwrite historical submissions when regenerating candidates.
 
-## Documentation
-
-See [doc/README.md](doc/README.md) for the benchmark function descriptions and the Week 2 expected-versus-observed output comparison notes.
-
-The same workflow is available in Python:
-
-```python
-from pathlib import Path
-from bayesian_bbo import (
-    BayesianOptimizer, OptimisationConfig, append_observation,
-    format_submission, load_observations, remaining_budget,
-)
-
-root = Path("data")
-observations = load_observations(root, 1)
-optimizer = BayesianOptimizer(
-    observations, OptimisationConfig(budget=remaining_budget(observations, 1), seed=42)
-)
-if optimizer.remaining:
-    point = optimizer.suggest()
-    print(format_submission(point))  # Submit this candidate to the real evaluator.
-# Once the actual scalar result is known:
-# value = ...  # Replace with the real observed output; never invent an evaluation.
-# append_observation(root, 1, point, value, week=<current week>)
-# optimizer.observe(point, value)
-# Repeat suggest/evaluate/append/observe until the budget is exhausted.
-```
-
-If you restart, `load_observations` includes previously saved evaluations; `remaining_budget` subtracts these from the configurable total (20 by default). Only record confirmed outputs. `run(evaluate)` is available when a genuine callable evaluator exists; it does not automatically persist results.
-
-## Project evolution
-
-`notebooks/` holds exploratory work, `results/` is reserved for measured outputs and convergence artefacts, and `reports/` contains explicitly unfinished templates for the data datasheet, model card, and final summary. Future updates will compare surrogate and acquisition choices, add new observations after submissions, document decisions and failures, and report actual results, plots, limitations, and conclusions when available. Neither the current baseline nor any strategy is claimed to be optimal.
+Continue updating this section as evaluations arrive. Record changes in best measured output, calibration, unsuccessful choices and the reasons for subsequent strategy changes. The [documentation index](doc/README.md) links detailed analysis; [reports](reports/) contains the developing reporting artefacts.

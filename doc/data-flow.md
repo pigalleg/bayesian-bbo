@@ -129,7 +129,7 @@ When all three prediction values are supplied, the helper does not predict at th
 
 The separate live example currently searches 100,000 candidates for Function 7 and passes the returned mean, standard deviation, and acquisition score directly to the same plot arguments. It does not read those marker values from JSON or overwrite historical files. Changing the candidate pool can select a different point even with identical training data and GP settings; this also changes the reference coordinates and therefore the slice curves. A higher EI score is not a measured improvement in the real objective.
 
-[week_3/01_optimum_progress.ipynb](../notebooks/week_3/01_optimum_progress.ipynb) compares saved `expected_best_outputs` against actual best-so-far values from the observation history. These historical expectations must not be replaced by predictions fitted using the outcomes being compared.
+[week_3/03_optimum_progress.ipynb](../notebooks/week_3/03_optimum_progress.ipynb) compares saved `expected_best_outputs` against actual best-so-far values from the observation history. These historical expectations must not be replaced by predictions fitted using the outcomes being compared.
 
 ## Rules to keep
 

@@ -4,6 +4,7 @@ import re
 import numpy as np
 import pytest
 
+from bayesian_bbo.acquisition import expected_best_output
 from bayesian_bbo.data import (
     FUNCTION_SPECS,
     Observations,
@@ -11,7 +12,18 @@ from bayesian_bbo.data import (
     append_weekly_batch,
     load_observations,
     save_predictions,
+    write_predictions,
 )
+
+PREDICTIONS = '{"expected_outputs": [11.5], "stds": [0.5], "expected_best_outputs": [12.1]}'
+
+
+def write_week(directory, *, inputs="[[0.2, 0.3]]", outputs="[12.0]", predictions=PREDICTIONS):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "inputs.json").write_text(inputs, encoding="utf-8")
+    (directory / "outputs.json").write_text(outputs, encoding="utf-8")
+    (directory / "predictions.json").write_text(predictions, encoding="utf-8")
+    return directory / "inputs.json", directory / "outputs.json", directory / "predictions.json"
 
 
 def test_function_specs_contains_only_functions_one_through_eight():
@@ -60,31 +72,144 @@ def test_load_observations_without_function_id_defaults_to_one_dimension(tmp_pat
 
 def test_save_predictions_preserves_values_and_submission_precision(tmp_path):
     points = [np.array([0.75533, 0.123456789]), np.array([0.0, 0.29667, 0.57364])]
-    paths = save_predictions([np.float64(1.25), -2.0], points, [0.125, 0.5], tmp_path)
+    expected = [np.float64(1.25), -2.0]
+    stds = [0.125, 0.5]
+    best = [1.0, -3.0]
+    paths = save_predictions(expected, points, stds, best, tmp_path)
 
-    assert json.loads(paths["expected_outputs.json"].read_text()) == [1.25, -2.0]
-    assert json.loads(paths["stds.json"].read_text()) == [0.125, 0.5]
+    assert set(paths) == {"inputs.json", "predictions.json"}
+    predictions = json.loads(paths["predictions.json"].read_text())
+    assert predictions["expected_outputs"] == [1.25, -2.0]
+    assert predictions["stds"] == [0.125, 0.5]
+    np.testing.assert_allclose(
+        predictions["expected_best_outputs"],
+        expected_best_output(np.array(expected), np.array(stds), np.array(best)),
+    )
     inputs_text = paths["inputs.json"].read_text()
     assert json.loads(inputs_text) == [[0.755330, 0.123457], [0.000000, 0.296670, 0.573640]]
     tokens = re.findall(r"-?\d+(?:\.\d+)?", inputs_text)
     assert len(tokens) == 5
     assert all(re.fullmatch(r"-?\d+\.\d{6}", token) for token in tokens)
     assert not (tmp_path / "outputs.json").exists()
+    assert not (tmp_path / "expected_outputs.json").exists()
+    assert not (tmp_path / "stds.json").exists()
+
+
+def test_save_predictions_rejects_unmatched_lengths(tmp_path):
+    with pytest.raises(ValueError, match="equally sized"):
+        save_predictions([1.0], [[0.1, 0.2]], [0.1], [0.0, 1.0], tmp_path)
+    assert not (tmp_path / "predictions.json").exists()
+
+
+@pytest.mark.parametrize("name", ["ei", "ucb"])
+def test_save_predictions_round_trips_acquisition_metadata(tmp_path, name):
+    from bayesian_bbo.data import _load_predictions
+    from bayesian_bbo.acquisition import expected_improvement, upper_confidence_bound
+
+    setting = {"name": "ei", "xi": 0.2, "best": 1.0} if name == "ei" else {"name": "ucb", "kappa": 1.96}
+    score = float(
+        expected_improvement(np.array(1.25), np.array(0.5), 1.0, xi=0.2)
+        if name == "ei" else upper_confidence_bound(1.25, 0.5, kappa=1.96)
+    )
+    paths = save_predictions(
+        [1.25], [[0.2, 0.3]], [0.5], [1.0], tmp_path,
+        acquisition_scores=[score], acquisition_settings=[setting],
+    )
+    predictions = _load_predictions(paths["predictions.json"])
+    assert predictions["acquisition_scores"] == [score]
+    assert predictions["acquisition_settings"] == [setting]
+    assert predictions["expected_best_outputs"][0] == pytest.approx(expected_best_output(1.25, 0.5, 1.0))
+    if name == "ei":
+        assert predictions["expected_best_outputs"][0] != pytest.approx(1.0 + score)
+
+
+@pytest.mark.parametrize("scores,settings", [
+    ([0.1], None),
+    (None, [{"name": "ucb", "kappa": 2.0}]),
+    ([], []),
+    ([float("nan")], [{"name": "ucb", "kappa": 2.0}]),
+    ([0.1], [{"name": "ei", "xi": -0.1, "best": 1.0}]),
+    ([-0.1], [{"name": "ei", "xi": 0.1, "best": 1.0}]),
+    ([0.1], [{"name": "ei", "xi": 0.1}]),
+])
+def test_save_predictions_rejects_invalid_acquisition_metadata(tmp_path, scores, settings):
+    with pytest.raises(ValueError):
+        save_predictions(
+            [1.25], [[0.2, 0.3]], [0.5], [1.0], tmp_path,
+            acquisition_scores=scores, acquisition_settings=settings,
+        )
+    assert not (tmp_path / "inputs.json").exists()
+
+
+@pytest.mark.parametrize("stds", [[-0.1], [np.nan], [np.inf]])
+def test_write_predictions_rejects_invalid_standard_deviations(tmp_path, stds):
+    with pytest.raises(ValueError, match="Standard deviations"):
+        write_predictions(tmp_path / "predictions.json", [0.0], stds, [0.0])
+    assert not (tmp_path / "predictions.json").exists()
+
+
+def test_save_predictions_refuses_to_replace_different_files(tmp_path):
+    save_predictions([1.0], [[0.1, 0.2]], [0.1], [0.0], tmp_path)
+    inputs_before = (tmp_path / "inputs.json").read_text()
+    predictions_before = (tmp_path / "predictions.json").read_text()
+
+    with pytest.raises(FileExistsError, match="overwrite=True"):
+        save_predictions([2.0], [[0.3, 0.4]], [0.2], [0.0], tmp_path)
+
+    assert (tmp_path / "inputs.json").read_text() == inputs_before
+    assert (tmp_path / "predictions.json").read_text() == predictions_before
+
+
+def test_save_predictions_refuses_when_only_predictions_differ(tmp_path):
+    save_predictions([1.0], [[0.1, 0.2]], [0.1], [0.0], tmp_path)
+    inputs_before = (tmp_path / "inputs.json").read_text()
+
+    with pytest.raises(FileExistsError):
+        save_predictions([2.0], [[0.1, 0.2]], [0.1], [0.0], tmp_path)
+
+    assert (tmp_path / "inputs.json").read_text() == inputs_before
+
+
+def test_save_predictions_allows_identical_rewrite(tmp_path):
+    save_predictions([1.0], [[0.1, 0.2]], [0.1], [0.0], tmp_path)
+    paths = save_predictions([1.0], [[0.1, 0.2]], [0.1], [0.0], tmp_path)
+    assert set(paths) == {"inputs.json", "predictions.json"}
+
+
+def test_save_predictions_overwrites_only_when_requested(tmp_path):
+    save_predictions([1.0], [[0.1, 0.2]], [0.1], [0.0], tmp_path)
+    save_predictions([2.0], [[0.3, 0.4]], [0.2], [0.0], tmp_path, overwrite=True)
+    predictions = json.loads((tmp_path / "predictions.json").read_text())
+    assert predictions["expected_outputs"] == [2.0]
+    assert json.loads((tmp_path / "inputs.json").read_text()) == [[0.3, 0.4]]
+
+
+def test_write_predictions_refuses_to_replace_different_file(tmp_path):
+    path = tmp_path / "predictions.json"
+    write_predictions(path, [1.0], [0.1], [0.0])
+    with pytest.raises(FileExistsError):
+        write_predictions(path, [2.0], [0.1], [0.0])
+    assert json.loads(path.read_text())["expected_outputs"] == [1.0]
+
+
+def test_expected_best_output_is_best_plus_ei_without_xi():
+    mean, std, best = 0.3, 0.7, 0.5
+    # E[max(f, best)] for f ~ N(mean, std), computed by Monte Carlo.
+    samples = np.random.default_rng(0).normal(mean, std, size=2_000_000)
+    assert expected_best_output(mean, std, best) == pytest.approx(
+        np.mean(np.maximum(samples, best)), abs=3e-3,
+    )
+    # Without uncertainty the expected best is the larger of the best and the mean.
+    assert expected_best_output(0.7, 0.0, 0.5) == pytest.approx(0.7)
+    assert expected_best_output(0.2, 0.0, 0.5) == pytest.approx(0.5)
 
 
 def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
     initial_data(tmp_path)
-    inputs_path = tmp_path / "inputs.json"
-    outputs_path = tmp_path / "outputs.json"
-    expected_path = tmp_path / "expected_outputs.json"
-    inputs_path.write_text("[[0.2, 0.3]]\n", encoding="utf-8")
-    outputs_path.write_text("[12.0]\n", encoding="utf-8")
-    expected_path.write_text("[11.5]\n", encoding="utf-8")
-    stds_path = tmp_path / "stds.json"
-    stds_path.write_text("[0.5]\n", encoding="utf-8")
+    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_2")
 
-    appended = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
-    repeated = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
+    appended = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+    repeated = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
 
     assert len(appended[1].inputs) == 11
     assert len(repeated[1].inputs) == 11
@@ -104,7 +229,7 @@ def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
 
     outputs_path.write_text("[13.0]\n", encoding="utf-8")
     with pytest.raises(ValueError, match="different output"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
 
     updated = append_observation(tmp_path, 1, [0.4, 0.5], 13.0, week=2, std=0.25)
     assert updated.expected_outputs[-2] == 11.5
@@ -113,21 +238,18 @@ def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
     np.testing.assert_array_equal(load_observations(tmp_path, 1).stds[-2:], [0.5, 0.25])
 
     outputs_path.write_text("[12.0]\n", encoding="utf-8")
-    expected_path.write_text("[12.5]\n", encoding="utf-8")
+    predictions_path.write_text(
+        '{"expected_outputs": [12.5], "stds": [0.5], "expected_best_outputs": [12.6]}',
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="different expected output"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
 
 
-def test_weekly_stds_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
+def test_predictions_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
     initial_data(tmp_path)
-    inputs_path = tmp_path / "inputs.json"
-    outputs_path = tmp_path / "outputs.json"
-    expected_path = tmp_path / "expected_outputs.json"
-    inputs_path.write_text("[[0.2, 0.3]]", encoding="utf-8")
-    outputs_path.write_text("[12.0]", encoding="utf-8")
-    expected_path.write_text("[11.5]", encoding="utf-8")
-    imported = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)[1]
-    assert np.isnan(imported.stds).all()
+    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_2")
+    imported = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)[1]
 
     aggregate = tmp_path / "function_1" / "all_observations.npz"
     np.savez(
@@ -135,40 +257,54 @@ def test_weekly_stds_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
         expected_outputs=imported.expected_outputs, weeks=imported.weeks,
     )
     assert np.isnan(load_observations(tmp_path, 1).stds).all()
-    stds_path = tmp_path / "uncertainties.json"
-    stds_path.write_text("[0.5]", encoding="utf-8")
-    updated = append_weekly_batch(
-        tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path, week=2,
-    )[1]
+    updated = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)[1]
     assert len(updated.outputs) == len(imported.outputs)
     assert updated.stds[-1] == 0.5
     assert np.isnan(updated.stds[:-1]).all()
     before = aggregate.read_bytes()
-    append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path, week=2)
+    append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
     assert aggregate.read_bytes() == before
-    without_stds = append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)[1]
-    assert without_stds.stds[-1] == 0.5
-    stds_path.write_text("[0.6]", encoding="utf-8")
+
+    predictions_path.write_text(
+        '{"expected_outputs": [11.5], "stds": [0.6], "expected_best_outputs": [12.1]}',
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="different standard deviation"):
-        append_weekly_batch(
-            tmp_path, inputs_path, outputs_path, expected_path, stds_path=stds_path, week=2,
-        )
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
     assert aggregate.read_bytes() == before
 
 
-@pytest.mark.parametrize("contents", ["[]", "[0.5, 0.6]", "[-0.1]", "[NaN]", "[Infinity]", "[[0.5]]"])
-def test_weekly_stds_reject_invalid_values_before_saving(tmp_path, contents):
+@pytest.mark.parametrize(
+    ("predictions", "message"),
+    [
+        ('{"expected_outputs": [11.5], "stds": [], "expected_best_outputs": [12.1]}', "equally sized"),
+        ('{"expected_outputs": [11.5], "stds": [-0.1], "expected_best_outputs": [12.1]}', "Standard deviations"),
+        ('{"expected_outputs": [11.5], "stds": [NaN], "expected_best_outputs": [12.1]}', "Standard deviations"),
+        ('{"expected_outputs": [11.5], "stds": [Infinity], "expected_best_outputs": [12.1]}', "Standard deviations"),
+        ('{"expected_outputs": [11.5], "stds": [[0.5]], "expected_best_outputs": [12.1]}', "list of numbers"),
+        ('{"expected_outputs": [11.5], "stds": [0.5]}', "must contain exactly"),
+        ("[]", "must contain exactly"),
+    ],
+)
+def test_predictions_reject_invalid_values_before_saving(tmp_path, predictions, message):
     initial_data(tmp_path)
-    inputs_path = tmp_path / "inputs.json"
-    outputs_path = tmp_path / "outputs.json"
-    expected_path = tmp_path / "expected_outputs.json"
-    inputs_path.write_text("[[0.2, 0.3]]", encoding="utf-8")
-    outputs_path.write_text("[12.0]", encoding="utf-8")
-    expected_path.write_text("[11.5]", encoding="utf-8")
-    (tmp_path / "stds.json").write_text(contents, encoding="utf-8")
+    inputs_path, outputs_path, predictions_path = write_week(
+        tmp_path / "week_2", predictions=predictions,
+    )
 
-    with pytest.raises(ValueError, match="standard deviations"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
+    with pytest.raises(ValueError, match=message):
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+    assert not (tmp_path / "function_1" / "all_observations.npz").exists()
+
+
+def test_weekly_batch_rejects_mismatched_prediction_length(tmp_path):
+    initial_data(tmp_path)
+    inputs_path, outputs_path, predictions_path = write_week(
+        tmp_path / "week_2", inputs="[[0.2, 0.3], [0.4, 0.5]]", outputs="[12.0, 13.0]",
+    )
+
+    with pytest.raises(ValueError, match="same nonzero length"):
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
     assert not (tmp_path / "function_1" / "all_observations.npz").exists()
 
 
@@ -182,15 +318,10 @@ def test_observations_validate_stds(tmp_path, stds):
 @pytest.mark.parametrize("contents", ["[array([0.2, 0.3])]", "[[0.2, 0.3],]", "{}"])
 def test_weekly_batch_rejects_invalid_json(tmp_path, contents):
     initial_data(tmp_path)
-    inputs_path = tmp_path / "inputs.json"
-    outputs_path = tmp_path / "outputs.json"
-    expected_path = tmp_path / "expected_outputs.json"
-    inputs_path.write_text(contents, encoding="utf-8")
-    outputs_path.write_text("[12.0]", encoding="utf-8")
-    expected_path.write_text("[11.5]", encoding="utf-8")
+    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_2", inputs=contents)
 
     with pytest.raises(ValueError, match="weekly data file|Weekly data file"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, expected_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
     assert not (tmp_path / "function_1" / "all_observations.npz").exists()
 
 
@@ -230,15 +361,9 @@ def test_up_to_week_filters_rows(tmp_path):
 
 def test_weekly_folder_infers_week(tmp_path):
     initial_data(tmp_path)
-    batch = tmp_path / "week_2"
-    batch.mkdir()
-    (batch / "inputs.json").write_text("[[0.2, 0.3]]", encoding="utf-8")
-    (batch / "outputs.json").write_text("[12.0]", encoding="utf-8")
-    (batch / "expected_outputs.json").write_text("[11.5]", encoding="utf-8")
+    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_2")
 
-    imported = append_weekly_batch(
-        tmp_path, batch / "inputs.json", batch / "outputs.json", batch / "expected_outputs.json",
-    )[1]
+    imported = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path)[1]
 
     assert imported.weeks[-1] == 2
     assert load_observations(tmp_path, 1).weeks[-1] == 2

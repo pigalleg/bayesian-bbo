@@ -10,6 +10,7 @@ import tempfile
 
 import numpy as np
 
+from .acquisition import expected_best_output
 from .submission import format_submission
 
 
@@ -171,45 +172,175 @@ def load_observations(
     return observations.through_week(up_to_week)
 
 
-def save_predictions(expected_outputs, suggested_points, standard_deviations, directory):
-    expected_rows = [float(value) for value in expected_outputs]
-    std_rows = [float(value) for value in standard_deviations]
+PREDICTION_FIELDS = ("expected_outputs", "stds", "expected_best_outputs")
+ACQUISITION_FIELDS = ("acquisition_scores", "acquisition_settings")
+
+
+def _number_list(values: object, name: str) -> list[float]:
+    if not isinstance(values, list) or any(
+        isinstance(value, bool) or not isinstance(value, (int, float)) for value in values
+    ):
+        raise ValueError(f"Predictions field must be a list of numbers: {name}")
+    return [float(value) for value in values]
+
+
+def _checked_predictions(
+    expected_outputs: Sequence[float],
+    stds: Sequence[float],
+    expected_best_outputs: Sequence[float],
+    acquisition_scores: Sequence[float] | None = None,
+    acquisition_settings: Sequence[dict[str, str | float]] | None = None,
+) -> dict:
+    payload = {
+        "expected_outputs": [float(value) for value in expected_outputs],
+        "stds": [float(value) for value in stds],
+        "expected_best_outputs": [float(value) for value in expected_best_outputs],
+    }
+    lengths = {len(values) for values in payload.values()}
+    if len(lengths) != 1 or not lengths.pop():
+        raise ValueError("Provide equally sized, nonempty predictions in matching function order.")
+    if not np.all(np.isfinite(payload["expected_outputs"])):
+        raise ValueError("Expected outputs must be finite.")
+    if not np.all(np.isfinite(payload["expected_best_outputs"])):
+        raise ValueError("Expected best outputs must be finite.")
+    if not np.all(np.isfinite(payload["stds"])) or np.any(np.asarray(payload["stds"]) < 0):
+        raise ValueError("Standard deviations must be finite and nonnegative.")
+    if (acquisition_scores is None) != (acquisition_settings is None):
+        raise ValueError("Acquisition scores and settings must be provided together.")
+    if acquisition_scores is not None and acquisition_settings is not None:
+        scores = _number_list(list(acquisition_scores), "acquisition_scores")
+        settings = list(acquisition_settings)
+        if len(scores) != len(expected_outputs) or len(settings) != len(scores):
+            raise ValueError("Provide equally sized acquisition scores, settings, and predictions.")
+        if not np.all(np.isfinite(scores)):
+            raise ValueError("Acquisition scores must be finite.")
+        for score, setting in zip(scores, settings):
+            if not isinstance(setting, dict):
+                raise ValueError("Acquisition settings must be objects.")
+            name = setting.get("name")
+            required = {"name", "xi", "best"} if name == "ei" else {"name", "kappa"}
+            if name not in {"ei", "ucb"} or set(setting) != required:
+                raise ValueError("Acquisition settings require name='ei', xi, best or name='ucb', kappa.")
+            for key in required - {"name"}:
+                value = setting[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+                    raise ValueError("Acquisition parameters must be finite numbers.")
+                if key != "best" and value < 0:
+                    raise ValueError("Acquisition parameters must be nonnegative.")
+            if name == "ei" and score < 0:
+                raise ValueError("EI scores must be nonnegative.")
+        payload = {**payload, "acquisition_scores": scores, "acquisition_settings": settings}
+    return payload
+
+
+def _predictions_text(payload: dict) -> str:
+    return json.dumps(payload, indent=2, allow_nan=False) + "\n"
+
+
+def _refuse_changes(path: Path, text: str, *, overwrite: bool) -> None:
+    """Raise before writing if the file exists with different content, unless overwrite is set."""
+    if overwrite or not path.exists() or path.read_text(encoding="utf-8") == text:
+        return
+    raise FileExistsError(f"{path} exists with different values; pass overwrite=True to replace it")
+
+
+def write_predictions(
+    path: Path,
+    expected_outputs: Sequence[float],
+    stds: Sequence[float],
+    expected_best_outputs: Sequence[float],
+    *,
+    acquisition_scores: Sequence[float] | None = None,
+    acquisition_settings: Sequence[dict[str, str | float]] | None = None,
+    overwrite: bool = False,
+) -> Path:
+    """Write one week's predictions and verify the saved file reads back unchanged."""
+    payload = _checked_predictions(
+        expected_outputs, stds, expected_best_outputs, acquisition_scores, acquisition_settings,
+    )
+    path = Path(path)
+    text = _predictions_text(payload)
+    _refuse_changes(path, text, overwrite=overwrite)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    if json.loads(path.read_text(encoding="utf-8")) != payload:
+        raise ValueError(f"Saved values do not match: {path}")
+    print(f"Saved and verified {path}")
+    return path
+
+
+def _load_predictions(path: Path) -> dict:
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Unable to parse predictions file: {path}") from error
+    if not isinstance(values, dict) or set(values) not in (
+        set(PREDICTION_FIELDS), set(PREDICTION_FIELDS + ACQUISITION_FIELDS),
+    ):
+        raise ValueError(
+            f"Predictions file must contain exactly {', '.join(PREDICTION_FIELDS)}, "
+            f"optionally with both {', '.join(ACQUISITION_FIELDS)}: {path}"
+        )
+    fields = {name: _number_list(values[name], name) for name in PREDICTION_FIELDS}
+    return _checked_predictions(
+        fields["expected_outputs"], fields["stds"], fields["expected_best_outputs"],
+        values.get("acquisition_scores"), values.get("acquisition_settings"),
+    )
+
+
+def save_predictions(
+    expected_outputs,
+    suggested_points,
+    standard_deviations,
+    best_outputs,
+    directory,
+    *,
+    acquisition_scores: Sequence[float] | None = None,
+    acquisition_settings: Sequence[dict[str, str | float]] | None = None,
+    overwrite: bool = False,
+):
+    """Write inputs.json and predictions.json; best_outputs are the best-so-far before this week. Different existing files are kept unless overwrite is True."""
+    expected = np.asarray(expected_outputs, dtype=float)
+    stds = np.asarray(standard_deviations, dtype=float)
+    best = np.asarray(best_outputs, dtype=float)
     submissions = [format_submission(point) for point in suggested_points]
     input_rows = [np.round(np.asarray(point, dtype=float), 6).tolist() for point in suggested_points]
-    if not expected_rows or not (len(expected_rows) == len(input_rows) == len(std_rows)):
+    if not len(input_rows) or not (len(expected) == len(stds) == len(best) == len(input_rows)):
         raise ValueError("Provide equally sized, nonempty arrays in matching function order.")
-    if not np.all(np.isfinite(expected_rows)) or not np.all(np.isfinite(std_rows)):
-        raise ValueError("Expected outputs and standard deviations must be finite.")
-    if np.any(np.asarray(std_rows) < 0):
-        raise ValueError("Standard deviations must be nonnegative.")
+    expected_best = expected_best_output(expected, stds, best)
+    predictions = _checked_predictions(
+        expected.tolist(), stds.tolist(), expected_best.tolist(),
+        acquisition_scores, acquisition_settings,
+    )
 
-    payloads = {
-        "expected_outputs.json": expected_rows,
-        "inputs.json": input_rows,
-        "stds.json": std_rows,
-    }
-    serialized = {
-        name: json.dumps(values, indent=2, allow_nan=False) + "\n"
-        for name, values in payloads.items()
-    }
-    serialized["inputs.json"] = "[\n" + ",\n".join(
+    directory = Path(directory)
+    inputs_text = "[\n" + ",\n".join(
         "  [" + ", ".join(f"{coordinate:.6f}" for coordinate in point) + "]"
         for point in input_rows
     ) + "\n]\n"
-    directory = Path(directory)
+    inputs_path = directory / "inputs.json"
+    predictions_path = directory / "predictions.json"
+    _refuse_changes(inputs_path, inputs_text, overwrite=overwrite)
+    _refuse_changes(predictions_path, _predictions_text(predictions), overwrite=overwrite)
     directory.mkdir(parents=True, exist_ok=True)
-    saved_paths = {}
-    for name, content in serialized.items():
-        path = directory / name
-        path.write_text(content, encoding="utf-8")
-        restored = json.loads(path.read_text(encoding="utf-8"))
-        if restored != payloads[name]:
-            raise ValueError(f"Saved values do not match: {path}")
-        if name == "inputs.json" and [format_submission(point) for point in restored] != submissions:
-            raise ValueError(f"Saved inputs do not match formatted submissions: {path}")
-        saved_paths[name] = path
-        print(f"Saved and verified {path}")
-    return saved_paths
+    inputs_path.write_text(inputs_text, encoding="utf-8")
+    restored_inputs = json.loads(inputs_path.read_text(encoding="utf-8"))
+    if restored_inputs != input_rows:
+        raise ValueError(f"Saved values do not match: {inputs_path}")
+    if [format_submission(point) for point in restored_inputs] != submissions:
+        raise ValueError(f"Saved inputs do not match formatted submissions: {inputs_path}")
+    print(f"Saved and verified {inputs_path}")
+
+    predictions_path = write_predictions(
+        predictions_path,
+        predictions["expected_outputs"],
+        predictions["stds"],
+        predictions["expected_best_outputs"],
+        acquisition_scores=acquisition_scores,
+        acquisition_settings=acquisition_settings,
+        overwrite=overwrite,
+    )
+    return {"inputs.json": inputs_path, "predictions.json": predictions_path}
 
 
 def _load_json_values(path: Path) -> list[object]:
@@ -270,13 +401,12 @@ def append_weekly_batch(
     root: Path,
     inputs_path: Path,
     outputs_path: Path,
-    expected_outputs_path: Path,
+    predictions_path: Path,
     function_ids: Sequence[int] | None = None,
     *,
-    stds_path: Path | None = None,
     week: int | None = None,
 ) -> dict[int, Observations]:
-    """Import a JSON batch, including neighboring stds.json when available."""
+    """Import one week's inputs, outputs, and predictions.json; the week defaults to the week_N folder."""
     if week is None:
         match = re.fullmatch(r"week_(\d+)", Path(inputs_path).parent.name)
         if match is None:
@@ -285,24 +415,11 @@ def append_weekly_batch(
     week = _checked_week(week)
     input_rows = _load_json_values(Path(inputs_path))
     output_rows = _load_json_values(Path(outputs_path))
-    expected_rows = _load_json_values(Path(expected_outputs_path))
-    if stds_path is None:
-        neighboring_stds = Path(expected_outputs_path).with_name("stds.json")
-        if neighboring_stds.exists():
-            stds_path = neighboring_stds
-    std_rows = (
-        _load_json_values(Path(stds_path))
-        if stds_path is not None
-        else [np.nan] * len(input_rows)
-    )
-    if not input_rows or len(input_rows) != len(output_rows) or len(input_rows) != len(expected_rows):
-        raise ValueError("Weekly inputs, outputs, and expected outputs must have the same nonzero length")
-    if len(std_rows) != len(input_rows):
-        raise ValueError("Weekly standard deviations must have one value per input")
-    if stds_path is not None:
-        std_values = np.asarray(std_rows, dtype=float)
-        if std_values.ndim != 1 or not np.all(np.isfinite(std_values) & (std_values >= 0)):
-            raise ValueError("Weekly standard deviations must be finite and nonnegative")
+    predictions = _load_predictions(Path(predictions_path))
+    expected_rows = predictions["expected_outputs"]
+    std_rows = predictions["stds"]
+    if not input_rows or not (len(input_rows) == len(output_rows) == len(expected_rows)):
+        raise ValueError("Weekly inputs, outputs, and predictions must have the same nonzero length")
 
     ids = list(function_ids) if function_ids is not None else list(range(1, len(input_rows) + 1))
     if len(ids) != len(input_rows) or len(set(ids)) != len(ids):
@@ -310,26 +427,17 @@ def append_weekly_batch(
 
     pending: dict[int, Observations] = {}
     results: dict[int, Observations] = {}
-    for function_id, input_row, output_row, expected_row, std_row in zip(
+    for function_id, input_row, output_row, expected_value, std_value in zip(
         ids, input_rows, output_rows, expected_rows, std_rows,
     ):
         current = load_observations(root, function_id)
         point = np.asarray(input_row, dtype=float).reshape(1, -1)
         value = float(output_row)
-        expected_value = float(expected_row)
-        std_value = float(std_row)
-        candidate = Observations(
-            point,
-            np.asarray([value]),
-            current.dimension,
-            np.asarray([expected_value]),
-            np.asarray([std_value]),
-        )
-        matches = np.all(current.inputs == candidate.inputs[0], axis=1)
+        matches = np.all(current.inputs == point[0], axis=1)
         if np.any(matches):
             if np.any(current.weeks[matches] != week):
                 raise ValueError(f"Function {function_id} already has this input in another week")
-            if not np.all(current.outputs[matches] == candidate.outputs[0]):
+            if not np.all(current.outputs[matches] == value):
                 raise ValueError(
                     f"Function {function_id} already has this input with a different output"
                 )
@@ -339,22 +447,17 @@ def append_weekly_batch(
                     f"Function {function_id} input already has a different expected output"
                 )
             existing_stds = current.stds[matches]
-            if np.isfinite(std_value) and np.any(
-                np.isfinite(existing_stds) & (existing_stds != std_value)
-            ):
+            if np.any(np.isfinite(existing_stds) & (existing_stds != std_value)):
                 raise ValueError(
                     f"Function {function_id} input already has a different standard deviation"
                 )
-            if np.all(np.isfinite(existing_expected)) and (
-                np.isnan(std_value) or np.all(np.isfinite(existing_stds))
-            ):
+            if np.all(np.isfinite(existing_expected)) and np.all(np.isfinite(existing_stds)):
                 results[function_id] = current
                 continue
             expected_outputs = current.expected_outputs.copy()
             expected_outputs[matches] = expected_value
             stds = current.stds.copy()
-            if np.isfinite(std_value):
-                stds[matches] = std_value
+            stds[matches] = std_value
             updated = Observations(
                 current.inputs,
                 current.outputs,
@@ -364,18 +467,13 @@ def append_weekly_batch(
                 current.weeks,
             )
         else:
-            updated = current.with_observation(
-                candidate.inputs[0], candidate.outputs[0], week=week, std=std_value,
-            )
-            expected_outputs = updated.expected_outputs.copy()
-            expected_outputs[-1] = candidate.expected_outputs[0]
             updated = Observations(
-                updated.inputs,
-                updated.outputs,
-                updated.dimension,
-                expected_outputs,
-                updated.stds,
-                updated.weeks,
+                np.vstack((current.inputs, point)),
+                np.append(current.outputs, value),
+                current.dimension,
+                np.append(current.expected_outputs, expected_value),
+                np.append(current.stds, std_value),
+                np.append(current.weeks, week),
             )
         pending[function_id] = updated
         results[function_id] = updated

@@ -17,4 +17,6 @@ __all__ = [
     "CONFIG",
     "load_config",
     "format_submission",
+    "plot_gp_2d",
+    "plot_gp_slices"
 ]

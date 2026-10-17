@@ -19,8 +19,8 @@ def suggest_candidate(
     best: float | None = None,
     xi: float = 0.01,
     kappa: float = 2.0,
-) -> tuple[np.ndarray, float, float]:
-    """Return the selected point, predictive mean, and predictive std.
+) -> tuple[np.ndarray, float, float, float]:
+    """Return the selected point, predictive mean, std, and acquisition score.
 
     Candidates are sampled from a uniform ``1e-6`` grid over ``[0, 1)``.
     Kernel hyperparameters are optimized unless fixed in the supplied kernel.

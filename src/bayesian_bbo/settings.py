@@ -1,11 +1,12 @@
 """Shared project settings loaded from the package's config.yaml."""
 
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-CONFIG_KEYS = {"normalize_y", "n_restarts_optimizer", "random_state", "candidates"}
+CONFIG_KEYS = {"normalize_y", "n_restarts_optimizer", "random_state", "candidates", "length_caps"}
 CONFIG_PATH = Path(__file__).with_name("config.yaml")
 
 
@@ -31,6 +32,16 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
         value = config[key]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"{key} must be a nonnegative integer")
+    caps = config["length_caps"]
+    if not isinstance(caps, dict) or not caps:
+        raise ValueError("length_caps must be a nonempty mapping of function IDs to positive finite values")
+    for function_id, cap in caps.items():
+        if isinstance(function_id, bool) or not isinstance(function_id, int) or function_id < 1:
+            raise ValueError("length_caps keys must be positive integer function IDs")
+        if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not isfinite(cap) or cap <= 0:
+            raise ValueError(f"length_caps[{function_id}] must be a positive finite number")
+    if not set(range(1, 9)) <= caps.keys():
+        raise ValueError("length_caps must include Functions 1 through 8")
     return config
 
 
