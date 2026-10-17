@@ -15,7 +15,7 @@ description: "Use when editing or running this repository's Bayesian optimizatio
 ## Fit, predict and select
 
 1. Use `load_observations(..., up_to_week=...)` explicitly to avoid outcome leakage into historical predictions.
-2. Use `CONFIG["length_caps"]` in week-3 notebooks; keep week-2 hardcoded caps unchanged. Candidate count comes from the shared configuration when appropriate; verify its actual value.
+2. Use `CONFIG["length_caps"]` in week-2 notebooks; keep week-1 hardcoded caps unchanged. Candidate count comes from the shared configuration when appropriate; verify its actual value.
 3. Construct `BayesianOptimizer(observations, OptimisationConfig(...))`. Use `predict()` for specified inputs and `suggest_with_prediction()` for a normal suggestion.
 4. For alpha sensitivity, use `suggest_ei_sweep(alpha_values * std(y), batch_size=...)`: one pool and one fitted GP per kernel, batched predictions, optimizer-owned selection. Repeated normal suggestions advance the RNG and do not compare the same pool.
 5. Keep seed, kernel, observations and pool fixed when comparing alpha. EI is maximized over the finite pool, not certified globally. Record candidate, mean, std, xi, score and selection method.

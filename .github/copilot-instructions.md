@@ -10,12 +10,12 @@
 - `surrogate.py`: GP fitting; `acquisition.py`: EI/UCB; `optimisation.py`: `BayesianOptimizer` and `OptimisationConfig`.
 - `visualisation.py`: GP heatmaps/slices, calibration and optimum progress; `submission.py`: six-decimal submission formatting.
 - `settings.py` loads `config.yaml` (there is no separate settings YAML). `CONFIG` includes candidate count and integer-keyed per-function `length_caps`.
-- `notebooks/week_2/` preserves historical hardcoded length caps. Week-3 notebooks read shared caps from `CONFIG`; do not migrate week-2 caps implicitly.
+- `notebooks/week_1/` preserves historical hardcoded length caps. Week-2 notebooks read shared caps from `CONFIG`; do not migrate week-1 caps implicitly.
 
 ## Analysis context and reusable workflow
 
 - Read [the documentation index](../doc/README.md), [data flow](../doc/data-flow.md), and the relevant weekly workflow before changing analysis or exports.
-- [Week 3 workflow](../doc/week-3-workflow.md) records candidate rationale, selected alpha/xi values, notebook order and export semantics. Verify current files rather than relying on previous chat names or numbers.
+- [Week 2 workflow](../doc/week-2-workflow.md) records candidate rationale, selected alpha/xi values, notebook order and export semantics. Verify current files rather than relying on previous chat names or numbers.
 - Use [the bayesian-notebook-workflow skill](skills/bayesian-notebook-workflow/SKILL.md) for GP diagnostics, alpha/xi sweeps, candidate selection, notebook execution and weekly exports.
 - Keep notebooks compact and readable. Put reusable candidate generation/selection in the package; use optimizer APIs instead of notebook-local pools and argmax logic.
 - Validate using the existing `.venv`: `.venv/bin/python -m pytest tests/<relevant_test>.py -q`. Distinguish syntax checks, reduced-pool execution and full million-candidate execution in reports.

@@ -1,6 +1,6 @@
 """Add a per-row `weeks` label to each function's all_observations.npz.
 
-Rows matching initial_inputs.npy are week 1. Other rows are matched to the
+Rows matching initial_inputs.npy are week 0. Other rows are matched to the
 weekly_updates/week_N batch that holds the same input and output. Dry run by
 default; pass --apply to rewrite files (each original is copied first).
 """
@@ -49,7 +49,7 @@ def label_function(root: Path, function_id: int) -> tuple[Path, dict[str, np.nda
         raise ValueError(f"function_{function_id}: leading rows do not match initial_inputs.npy")
 
     batches = batch_rows(root, function_id)
-    weeks = np.ones(len(arrays["inputs"]), dtype=int)
+    weeks = np.zeros(len(arrays["inputs"]), dtype=int)
     for index in range(n_initial, len(arrays["inputs"])):
         point = arrays["inputs"][index]
         value = arrays["outputs"][index]

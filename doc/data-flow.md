@@ -4,28 +4,29 @@ This document describes how data moves from the supplied arrays to the per-funct
 
 ## Week numbering
 
-- Week 1 is the supplied initial data (`initial_inputs.npy` and `initial_outputs.npy`).
+- Week 0 is the supplied initial data (`initial_inputs.npy` and `initial_outputs.npy`).
 - The folder `data/weekly_updates/week_N/` holds the inputs evaluated in week $N$, their real outputs, and the predictions made before those evaluations.
 - Predictions in `week_N` are made in week $N-1$, using only observations with `weeks` $\le N-1$.
+- The repository uses zero-based week numbering: initial data and baseline analysis are week 0; the first evaluated submission is week 1. Notebook/data folders, documentation and aggregate `weeks` labels follow this convention. Relabelling does not change any input, measured output or prediction value.
 
 ## Overview
 
 ```mermaid
 flowchart TD
-    I1[function_N/initial_inputs.npy and initial_outputs.npy] --> NB1[week_1.ipynb: UCB fit on week 1 data]
-    NB1 -->|save_predictions| P2[week_2/inputs.json and predictions.json]
-    TXT[text_exports/inputs.txt and outputs.txt] -->|convert_weekly_txt.py| O2[week_2/outputs.json]
+    I1[function_N/initial_inputs.npy and initial_outputs.npy] --> NB1[week_0.ipynb: UCB fit on week 0 data]
+    NB1 -->|save_predictions| P2[week_1/inputs.json and predictions.json]
+    TXT[text_exports/inputs.txt and outputs.txt] -->|convert_weekly_txt.py| O2[week_1/outputs.json]
     P2 --> B2[append_weekly_batch]
     O2 --> B2
     B2 --> AGG[function_N/all_observations.npz]
-    AGG -->|load_observations up_to_week=2| NB6[06 notebook: EI with Matérn 3/2 fit on weeks 1 to 2]
-    NB6 -->|save_predictions| P3[week_3/inputs.json and predictions.json]
-    TXT -->|convert_weekly_txt.py| O3[week_3/outputs.json]
+    AGG -->|load_observations up_to_week=1| NB6[06 notebook: EI with Matérn 3/2 fit on weeks 0 to 1]
+    NB6 -->|save_predictions| P3[week_2/inputs.json and predictions.json]
+    TXT -->|convert_weekly_txt.py| O3[week_2/outputs.json]
     P3 --> B3[append_weekly_batch]
     O3 --> B3
     B3 --> AGG
-    P3 --> D7[07 notebook: stored suggestion diagnostics]
-    AGG -->|load_observations up_to_week=2| D7
+    P3 --> D7[week_2/01 notebook: stored suggestion diagnostics]
+    AGG -->|load_observations up_to_week=1| D7
 ```
 
 The cycle repeats for each new week: predictions are saved before evaluation, real outputs are added after evaluation, and the next suggestions use the updated aggregate.
@@ -33,9 +34,9 @@ The cycle repeats for each new week: predictions are saved before evaluation, re
 ## Stages
 
 1. **Initial data.** The supplied `initial_inputs.npy` and `initial_outputs.npy` are never modified. [data/README.md](../data/README.md) lists the requirements. `load_observations` reads them only until the first aggregate exists.
-2. **Suggest and predict.** A notebook fits a Gaussian process (GP) on the observations available at that point. `suggest_with_prediction()` returns `(point, mean, std, acquisition_score)`; capture `optimizer.acquisition_settings` alongside that result. The notebook calls `save_predictions` to write `inputs.json` and `predictions.json` to the next week's folder. The save step checks the values by reading the files back and, by default, refuses to replace existing files with different values. The historical suggestion notebooks explicitly use `overwrite=True` after checking that regenerated inputs match the submitted inputs.
+2. **Suggest and predict.** A notebook fits a Gaussian process (GP) on the observations available at that point. `suggest_with_prediction()` returns `(point, mean, std, acquisition_score)`; capture `optimizer.acquisition_settings` alongside that result. The notebook calls `save_predictions` to write `inputs.json` and `predictions.json` to the next week's folder. The save step checks the values by reading the files back and refuses to replace existing files with different values. Historical suggestion notebooks pin the original 2,048-candidate pool and verify regenerated inputs against the submitted inputs.
 3. **Evaluate (external).** The evaluator returns one real output per input. Results arrive as NumPy-printed text in `data/weekly_updates/text_exports/`, one list per week.
-4. **Convert text to JSON.** [scripts/convert_weekly_txt.py](../scripts/convert_weekly_txt.py) writes `inputs.json` and `outputs.json` into each week folder. Identical files are reported as unchanged. Differing files are rejected unless `--overwrite` is given. List $i$ in a text file becomes week `--first-week` + $i$ (default first week 2). Row $j$ maps to function $j$ unless function IDs are passed explicitly.
+4. **Convert text to JSON.** [scripts/convert_weekly_txt.py](../scripts/convert_weekly_txt.py) writes `inputs.json` and `outputs.json` into each week folder. Identical files are reported as unchanged. Differing files are rejected unless `--overwrite` is given. List $i$ in a text file becomes week `--first-week` + $i$ (default first week 1). Row $j$ maps to function $j$ unless function IDs are passed explicitly.
 5. **Import the batch.** `append_weekly_batch` reads `inputs.json`, `outputs.json`, and `predictions.json` together and appends the rows to each function's `all_observations.npz`. The week comes from the folder name (`week_N` gives week $N$). Re-importing identical rows is a no-op. Conflicting outputs or predictions are rejected.
 6. **Reuse.** Notebooks call `load_observations(root, function_id, up_to_week=N)` to get the data available through week $N$. Analysis notebooks read the same aggregate.
 
@@ -45,7 +46,7 @@ The cycle repeats for each new week: predictions are saved before evaluation, re
 
 | Field | Shape | Meaning |
 | --- | --- | --- |
-| initial inputs | $(n, d)$ | Week 1 input points in $[0, 1)^d$. $d$ is the dimension of function $N$. |
+| initial inputs | $(n, d)$ | Week 0 input points in $[0, 1)^d$. $d$ is the dimension of function $N$. |
 | initial outputs | $(n,)$ or $(n, 1)$ | Real scalar outputs for the initial inputs. |
 
 ### `data/function_N/all_observations.npz`
@@ -58,7 +59,7 @@ This is the runtime source of truth for function $N$. Every array has one row pe
 | `outputs` | $(m,)$ | Real evaluator output for each point. This is the only field that comes from the objective. |
 | `expected_outputs` | $(m,)$ | GP posterior mean predicted for that point before it was evaluated. `NaN` for initial rows and for rows recorded without a prediction. |
 | `stds` | $(m,)$ | GP predictive standard deviation at that point, in output units, from the same prediction. Nonnegative. `NaN` when missing. |
-| `weeks` | $(m,)$ | Week label. `1` for initial data; `N` for rows imported from `week_N`. Files without this field are rejected until `scripts/add_week_labels.py` adds it. |
+| `weeks` | $(m,)$ | Nonnegative week label. `0` for initial data; `N` for rows imported from `week_N`. Files without this field are rejected until `scripts/add_week_labels.py` adds it. |
 
 `expected_best_outputs` is not stored in this file. It exists only in the week's `predictions.json`.
 
@@ -84,7 +85,7 @@ A JSON object with three base prediction arrays and, in newly generated files, t
 
 `expected_best_outputs` does not depend on the exploration parameter used to select the input (for example, $\xi = 0.1\,\mathrm{std}(y)$ in notebook 06). It uses $\xi = 0$ and is computed without refitting the model.
 
-`acquisition_scores` instead preserves the configured selection score: Week 2 predictions use UCB with `kappa = 1.96`; Week 3 predictions use EI with each function's `XI_VALUES` entry. Scores and settings are optional for older files but must be supplied together. They remain tracking metadata in `predictions.json`, not columns in `all_observations.npz`. The suggestion notebooks verify regenerated coordinates against historical `inputs.json` before overwriting predictions.
+`acquisition_scores` instead preserves the configured selection score: Week 1 predictions use UCB with `kappa = 1.96`; Week 2 predictions use EI with each function's `XI_VALUES` entry. Scores and settings are optional for older files but must be supplied together. They remain tracking metadata in `predictions.json`, not columns in `all_observations.npz`. Historical suggestion notebooks verify regenerated coordinates and refuse to replace different stored predictions.
 
 `optimizer.acquisition_settings` supplies the same settings used by `predict()`: the configured `xi` and resolved incumbent `best` for EI, or `kappa` for UCB. It returns a fresh dictionary reflecting the current observations and configuration. Capture it alongside the selected score, before observing a new result or changing the configuration, as the suggestion notebooks do.
 
@@ -96,7 +97,7 @@ NumPy-printed attachments from the evaluator. Each file holds one list per week,
 
 | File | Written by | Read by |
 | --- | --- | --- |
-| `initial_inputs.npy`, `initial_outputs.npy` | Supplied | `load_observations` (fallback), `week_1.ipynb` |
+| `initial_inputs.npy`, `initial_outputs.npy` | Supplied | `load_observations` (fallback), `week_0.ipynb` |
 | `all_observations.npz` | `append_weekly_batch`, `append_observation`, `scripts/add_week_labels.py` | `load_observations`, all notebooks, analysis scripts |
 | `week_N/inputs.json` | `save_predictions`; `convert_weekly_txt.py` | `append_weekly_batch`; stored-candidate diagnostics |
 | `week_N/outputs.json` | `convert_weekly_txt.py` | `append_weekly_batch` |
@@ -109,12 +110,12 @@ The code that does this work is in [src/bayesian_bbo/data.py](../src/bayesian_bb
 
 | Notebook | Data used | Writes |
 | --- | --- | --- |
-| [week_1/week_1.ipynb](../notebooks/week_1/week_1.ipynb) | Initial data (weeks $\le 1$). UCB with $\kappa = 1.96$ and a fixed RBF kernel. | `week_2/inputs.json`, `week_2/predictions.json`. The best-so-far for `expected_best_outputs` is the maximum of the initial outputs. |
-| [week_2/06_all_functions_ei_matern32_suggestions.ipynb](../notebooks/week_2/06_all_functions_ei_matern32_suggestions.ipynb) | Data through week 2 (`up_to_week=2`). EI with Matérn 3/2, per-function length-scale caps, and hardcoded `XI_VALUES` originally chosen as $0.1\,\mathrm{std}(y)$. | `week_3/inputs.json`, `week_3/predictions.json`. The best-so-far is the maximum of weeks $\le 2$. |
+| [week_0/week_0.ipynb](../notebooks/week_0/week_0.ipynb) | Initial data (week 0). UCB with $\kappa = 1.96$ and a fixed RBF kernel. | `week_1/inputs.json`, `week_1/predictions.json`. The best-so-far for `expected_best_outputs` is the maximum of the initial outputs. |
+| [week_1/06_all_functions_ei_matern32_suggestions.ipynb](../notebooks/week_1/06_all_functions_ei_matern32_suggestions.ipynb) | Data through week 1 (`up_to_week=1`). EI with Matérn 3/2, per-function length-scale caps, and hardcoded `XI_VALUES` originally chosen as $0.1\,\mathrm{std}(y)$. | `week_2/inputs.json`, `week_2/predictions.json`. The best-so-far is the maximum of weeks $\le 1$. |
 
 ## Stored and live diagnostics
 
-[week_2/07_optimum_progress_before_optimizer.ipynb](../notebooks/week_2/07_optimum_progress_before_optimizer.ipynb) is a read-only consumer: it does not save suggestions or record evaluations. With `WEEK = 2`, it trains on observations through week 2 and reads the historical week 3 suggestion. It configures EI using the saved `xi` and incumbent `best`, with the Matérn 3/2 kernel and length-scale caps matching notebook 06. Saved UCB records are rejected by this EI-specific example.
+[week_2/01_optimum_progress_before_optimizer.ipynb](../notebooks/week_2/01_optimum_progress_before_optimizer.ipynb) is a read-only consumer: it does not save suggestions or record evaluations. With `WEEK = 1`, it trains on observations through week 1 and reads the historical week 2 suggestion. It configures EI using the saved `xi` and incumbent `best`, with the Matérn 3/2 kernel and length-scale caps matching notebook 06. Saved UCB records are rejected by this EI-specific example.
 
 The stored-candidate loop passes these fields to `plot_gp_2d` or `plot_gp_slices` in [src/bayesian_bbo/visualisation.py](../src/bayesian_bbo/visualisation.py):
 
@@ -127,16 +128,16 @@ The stored-candidate loop passes these fields to `plot_gp_2d` or `plot_gp_slices
 
 When all three prediction values are supplied, the helper does not predict at the candidate again. Mean and standard deviation must be supplied together; missing candidate predictions are computed with `optimizer.predict()`. The heatmaps, slice curves, and uncertainty bands always come from the currently fitted model, so they can differ from the saved marker values. Coordinate slices fix all other coordinates at the candidate, rather than projecting observations onto each axis.
 
-The separate live example currently searches 100,000 candidates for Function 7 and passes the returned mean, standard deviation, and acquisition score directly to the same plot arguments. It does not read those marker values from JSON or overwrite historical files. Changing the candidate pool can select a different point even with identical training data and GP settings; this also changes the reference coordinates and therefore the slice curves. A higher EI score is not a measured improvement in the real objective.
+The separate live example searches 1,000,000 candidates and passes the returned mean, standard deviation, and acquisition score directly to the same plot arguments. It does not read those marker values from JSON or overwrite historical files. Changing the candidate pool can select a different point even with identical training data and GP settings; this also changes the reference coordinates and therefore the slice curves. A higher EI score is not a measured improvement in the real objective.
 
-[week_3/03_optimum_progress.ipynb](../notebooks/week_3/03_optimum_progress.ipynb) compares saved `expected_best_outputs` against actual best-so-far values from the observation history. These historical expectations must not be replaced by predictions fitted using the outcomes being compared.
+[week_2/03_optimum_progress.ipynb](../notebooks/week_2/03_optimum_progress.ipynb) compares saved `expected_best_outputs` against actual best-so-far values from the observation history. These historical expectations must not be replaced by predictions fitted using the outcomes being compared.
 
 ## Rules to keep
 
 - Never edit `all_observations.npz` by hand; use `append_weekly_batch` or `append_observation`.
 - Save predictions before the evaluation they describe. Historical regeneration must preserve the original training cutoff and settings; never include the predicted point's outcome or later observations in that fit.
 - `save_predictions` refuses to replace an existing `inputs.json` or `predictions.json` with different values, and checks both files before writing either. Pass `overwrite=True` only to replace the current week's files on purpose. Identical files can be rewritten.
-- The historical suggestion notebooks use `overwrite=True` to regenerate predictions, but first assert that regenerated coordinates equal the existing submitted inputs. A candidate mismatch stops the save instead of replacing the historical submission. The plotting notebook does not perform this save step.
+- Historical suggestion notebooks preserve their original 2,048-candidate pool, assert that regenerated coordinates equal the existing submitted inputs, and refuse to overwrite different predictions. The latest optimum-progress notebook explicitly exports the next week's selections in its final cell.
 - Standard deviations must be nonnegative. Predictions and outputs must be finite.
 
 ## Known gaps

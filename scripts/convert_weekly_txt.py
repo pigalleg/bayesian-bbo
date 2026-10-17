@@ -2,7 +2,7 @@
 
 Each list starts on its own line, written with NumPy's repr: rows as
 `array([...])` (inputs) or plain numbers (outputs). A file holds one list per
-week, in order; the first list is --first-week (default 2), the next is the
+week, in order; the first list is --first-week (default 1), the next is the
 following week, and so on. Each list is written to
 `<weeks-dir>/week_<N>/<file stem>.json`. Existing JSON with identical values is
 left alone; other existing files need --overwrite. Nothing is written if any
@@ -64,11 +64,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("paths", nargs="+", type=Path, help="NumPy-printed .txt files to convert")
     parser.add_argument("--weeks-dir", type=Path, default=DEFAULT_WEEKS_DIR, help="folder holding week_N subfolders")
-    parser.add_argument("--first-week", type=int, default=2, help="week number of the first list in each file")
+    parser.add_argument("--first-week", type=int, default=1, help="week number of the first list in each file")
     parser.add_argument("--overwrite", action="store_true", help="replace existing JSON files with different values")
     args = parser.parse_args()
-    if args.first_week < 1:
-        parser.error("--first-week must be a positive integer")
+    if args.first_week < 0:
+        parser.error("--first-week must be a nonnegative integer")
 
     conversions = []
     for source in args.paths:

@@ -43,7 +43,7 @@ Initial observations are supplied as input arrays of shape `(n, d)` and output a
 - **The GP surrogate (internal to this repository)** returns a predicted mean and standard deviation at an input.
 - **The optimizer (internal to this repository)** returns a suggested candidate, its predicted mean and uncertainty, and an acquisition score such as Expected Improvement (EI). Predictions are not measured results.
 
-The workflow exports [inputs.json](data/weekly_updates/week_4/inputs.json) and [predictions.json](data/weekly_updates/week_4/predictions.json). Predictions include expected outputs, standard deviations, expected best-so-far, acquisition scores and the settings used to calculate them. Once the external evaluator returns the actual scores, these are recorded separately in `outputs.json` for the corresponding week (for example, [week-3 outputs.json](data/weekly_updates/week_3/outputs.json)), in the same function order as the inputs. These are measured outcomes, not surrogate predictions. See [data placement and provenance](data/README.md) and [data flow](doc/data-flow.md) for schemas and validation rules.
+The workflow exports [inputs.json](data/weekly_updates/week_3/inputs.json) and [predictions.json](data/weekly_updates/week_3/predictions.json). Predictions include expected outputs, standard deviations, expected best-so-far, acquisition scores and the settings used to calculate them. Once the external evaluator returns the actual scores, these are recorded separately in `outputs.json` for the corresponding week (for example, [week-2 outputs.json](data/weekly_updates/week_2/outputs.json)), in the same function order as the inputs. These are measured outcomes, not surrogate predictions. See [data placement and provenance](data/README.md) and [data flow](doc/data-flow.md) for schemas and validation rules.
 
 ## 3. Challenge objectives
 
@@ -72,13 +72,13 @@ The early baseline uses Upper Confidence Bound (UCB). Later analysis uses EI, wi
 
 ### Living record of the first three submission decisions
 
-The repository labels exported rounds by their **evaluation week**: week-1 analysis prepares week-2 inputs, week-2 analysis prepares week-3 inputs, and week-3 analysis prepares week-4 inputs.
+The repository labels exported rounds by their **evaluation week**: week-0 analysis prepares week-1 inputs, week-1 analysis prepares week-2 inputs, and week-2 analysis prepares week-3 inputs.
 
 | Submission decision | Strategy and rationale |
 | --- | --- |
-| **Week-2** | Use the supplied initial observations, an RBF GP with fixed length scale 0.1, and UCB with `kappa = 1.96`. Inspect the low-dimensional plots to understand predicted peaks and uncertainty. See the [week-1 notebook](notebooks/week_1/week_1.ipynb). |
-| **Week-3** | Compare kernels, length-scale caps and alpha sensitivity. Select Matérn 3/2 for EI suggestions, prioritising within-function held-out cross-validation over in-sample likelihood when they disagree. Use alpha 0.1 and per-function caps. The decision record reports a 2,048-candidate pool; scripts reading shared settings may now use a different pool. See the [week-2 workflow](doc/week-2-workflow.md). |
-| **Week-4 candidates, exported but not yet evaluated** | Review best-so-far progress and calibration, increase the search pool to 1,000,000 after observing candidate sensitivity, and choose alpha 0.1 for F1-F5 and 0.2 for F6-F8 by visual inspection. Override EI with diagnostic queries for F1-F2; use optimizer-selected pool EI maxima for F3-F8. See the [week-3 workflow](doc/week-3-workflow.md). |
+| **Week-1** | Use the supplied initial observations, an RBF GP with fixed length scale 0.1, and UCB with `kappa = 1.96`. Inspect the low-dimensional plots to understand predicted peaks and uncertainty. See the [week-0 notebook](notebooks/week_0/week_0.ipynb). |
+| **Week-2** | Compare kernels, length-scale caps and alpha sensitivity. Select Matérn 3/2 for EI suggestions, prioritising within-function held-out cross-validation over in-sample likelihood when they disagree. Use alpha 0.1 and per-function caps. The decision record reports a 2,048-candidate pool; scripts reading shared settings may now use a different pool. See the [week-1 workflow](doc/week-1-workflow.md). |
+| **Week-3 candidates, exported but not yet evaluated** | Review best-so-far progress and calibration, increase the search pool to 1,000,000 after observing candidate sensitivity, and choose alpha 0.1 for F1-F5 and 0.2 for F6-F8 by visual inspection. Override EI with diagnostic queries for F1-F2; use optimizer-selected pool EI maxima for F3-F8. See the [week-2 workflow](doc/week-2-workflow.md). |
 
 The kernel comparison is evidence about predictive performance, not proof of optimisation performance. Matérn 3/2 is retained as a consistent suggestion model despite per-function exceptions and disagreement between likelihood and cross-validation.
 
@@ -96,7 +96,7 @@ The distinguishing feature is not a claim of a novel optimizer, but a combinatio
 
 ### Reproduce and continue
 
-The reusable code is in [src/bayesian_bbo](src/bayesian_bbo); shared defaults are in [config.yaml](src/bayesian_bbo/config.yaml). Week-3 notebooks read shared length caps, while week-2 notebooks retain historical hardcoded caps.
+The reusable code is in [src/bayesian_bbo](src/bayesian_bbo); shared defaults are in [config.yaml](src/bayesian_bbo/config.yaml). Week-2 notebooks read shared length caps, while week-1 notebooks retain historical hardcoded caps.
 
 Using an existing suitable Python 3.10+ environment, install and validate with:
 
@@ -106,6 +106,6 @@ python -m pytest
 jupyter notebook
 ```
 
-Place supplied observations as described in [data/README.md](data/README.md). Follow the [week-3 notebook order](doc/week-3-workflow.md#notebook-order) for diagnostics, alpha selection and final exports. The evaluator is external; do not substitute predictions for actual outcomes or overwrite historical submissions when regenerating candidates.
+Place supplied observations as described in [data/README.md](data/README.md). Follow the [week-2 notebook order](doc/week-2-workflow.md#notebook-order) for diagnostics, alpha selection and final exports. The evaluator is external; do not substitute predictions for actual outcomes or overwrite historical submissions when regenerating candidates.
 
 Continue updating this section as evaluations arrive. Record changes in best measured output, calibration, unsuccessful choices and the reasons for subsequent strategy changes. The [documentation index](doc/README.md) links detailed analysis; [reports](reports/) contains the developing reporting artefacts.

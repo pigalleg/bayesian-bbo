@@ -27,8 +27,8 @@ FUNCTION_SPECS = {
 
 
 def _checked_week(week: object) -> int:
-    if isinstance(week, bool) or not isinstance(week, (int, np.integer)) or week < 1:
-        raise ValueError("Week must be a positive integer")
+    if isinstance(week, bool) or not isinstance(week, (int, np.integer)) or week < 0:
+        raise ValueError("Week must be a nonnegative integer")
     return int(week)
 
 
@@ -80,9 +80,9 @@ class Observations:
         object.__setattr__(self, "outputs", y.copy())
         object.__setattr__(self, "expected_outputs", expected.copy())
         object.__setattr__(self, "stds", stds.copy())
-        weeks = np.ones(len(x), dtype=int) if self.weeks is None else np.asarray(self.weeks)
-        if weeks.ndim != 1 or len(weeks) != len(x) or not np.issubdtype(weeks.dtype, np.integer) or np.any(weeks < 1):
-            raise ValueError("Weeks must contain one positive integer per input")
+        weeks = np.zeros(len(x), dtype=int) if self.weeks is None else np.asarray(self.weeks)
+        if weeks.ndim != 1 or len(weeks) != len(x) or not np.issubdtype(weeks.dtype, np.integer) or np.any(weeks < 0):
+            raise ValueError("Weeks must contain one nonnegative integer per input")
         object.__setattr__(self, "weeks", weeks.astype(int))
 
     @property
@@ -165,7 +165,7 @@ def load_observations(
             initial_inputs,
             np.load(directory / "initial_outputs.npy", allow_pickle=False),
             dimension,
-            weeks=np.ones(len(initial_inputs), dtype=int),
+            weeks=np.zeros(len(initial_inputs), dtype=int),
         )
     if up_to_week is None:
         return observations

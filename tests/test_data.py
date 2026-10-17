@@ -45,7 +45,7 @@ def test_load_append_and_preserve_originals(tmp_path):
     initial = load_observations(tmp_path, 1)
     assert initial.inputs.shape == (10, 2)
     assert initial.outputs.shape == (10,)
-    updated = append_observation(tmp_path, 1, [0.2, 0.3], 12.0, week=2)
+    updated = append_observation(tmp_path, 1, [0.2, 0.3], 12.0, week=1)
     assert updated.best_output == 12
     np.testing.assert_array_equal(updated.best_input, [0.2, 0.3])
     assert len(load_observations(tmp_path, 1).inputs) == 11
@@ -54,7 +54,7 @@ def test_load_append_and_preserve_originals(tmp_path):
     np.testing.assert_array_equal(np.load(tmp_path / "function_1" / "initial_inputs.npy"), x)
     np.testing.assert_array_equal(np.load(tmp_path / "function_1" / "initial_outputs.npy"), y)
     with pytest.raises(ValueError, match="Duplicate"):
-        append_observation(tmp_path, 1, [0.2, 0.3], 13, week=2)
+        append_observation(tmp_path, 1, [0.2, 0.3], 13, week=1)
 
 
 def test_load_observations_without_function_id_defaults_to_one_dimension(tmp_path):
@@ -206,10 +206,10 @@ def test_expected_best_output_is_best_plus_ei_without_xi():
 
 def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
     initial_data(tmp_path)
-    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_2")
+    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_1")
 
-    appended = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
-    repeated = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+    appended = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
+    repeated = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
 
     assert len(appended[1].inputs) == 11
     assert len(repeated[1].inputs) == 11
@@ -229,9 +229,9 @@ def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
 
     outputs_path.write_text("[13.0]\n", encoding="utf-8")
     with pytest.raises(ValueError, match="different output"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
 
-    updated = append_observation(tmp_path, 1, [0.4, 0.5], 13.0, week=2, std=0.25)
+    updated = append_observation(tmp_path, 1, [0.4, 0.5], 13.0, week=1, std=0.25)
     assert updated.expected_outputs[-2] == 11.5
     assert np.isnan(updated.expected_outputs[-1])
     np.testing.assert_array_equal(updated.stds[-2:], [0.5, 0.25])
@@ -243,13 +243,13 @@ def test_append_weekly_batch_bootstraps_and_is_idempotent(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="different expected output"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
 
 
 def test_predictions_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
     initial_data(tmp_path)
-    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_2")
-    imported = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)[1]
+    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_1")
+    imported = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)[1]
 
     aggregate = tmp_path / "function_1" / "all_observations.npz"
     np.savez(
@@ -257,12 +257,12 @@ def test_predictions_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
         expected_outputs=imported.expected_outputs, weeks=imported.weeks,
     )
     assert np.isnan(load_observations(tmp_path, 1).stds).all()
-    updated = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)[1]
+    updated = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)[1]
     assert len(updated.outputs) == len(imported.outputs)
     assert updated.stds[-1] == 0.5
     assert np.isnan(updated.stds[:-1]).all()
     before = aggregate.read_bytes()
-    append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+    append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
     assert aggregate.read_bytes() == before
 
     predictions_path.write_text(
@@ -270,7 +270,7 @@ def test_predictions_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="different standard deviation"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
     assert aggregate.read_bytes() == before
 
 
@@ -289,22 +289,22 @@ def test_predictions_backfill_legacy_aggregate_and_reject_conflicts(tmp_path):
 def test_predictions_reject_invalid_values_before_saving(tmp_path, predictions, message):
     initial_data(tmp_path)
     inputs_path, outputs_path, predictions_path = write_week(
-        tmp_path / "week_2", predictions=predictions,
+        tmp_path / "week_1", predictions=predictions,
     )
 
     with pytest.raises(ValueError, match=message):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
     assert not (tmp_path / "function_1" / "all_observations.npz").exists()
 
 
 def test_weekly_batch_rejects_mismatched_prediction_length(tmp_path):
     initial_data(tmp_path)
     inputs_path, outputs_path, predictions_path = write_week(
-        tmp_path / "week_2", inputs="[[0.2, 0.3], [0.4, 0.5]]", outputs="[12.0, 13.0]",
+        tmp_path / "week_1", inputs="[[0.2, 0.3], [0.4, 0.5]]", outputs="[12.0, 13.0]",
     )
 
     with pytest.raises(ValueError, match="same nonzero length"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
     assert not (tmp_path / "function_1" / "all_observations.npz").exists()
 
 
@@ -318,10 +318,10 @@ def test_observations_validate_stds(tmp_path, stds):
 @pytest.mark.parametrize("contents", ["[array([0.2, 0.3])]", "[[0.2, 0.3],]", "{}"])
 def test_weekly_batch_rejects_invalid_json(tmp_path, contents):
     initial_data(tmp_path)
-    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_2", inputs=contents)
+    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_1", inputs=contents)
 
     with pytest.raises(ValueError, match="weekly data file|Weekly data file"):
-        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=2)
+        append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path, week=1)
     assert not (tmp_path / "function_1" / "all_observations.npz").exists()
 
 
@@ -347,26 +347,26 @@ def test_invalid_initial_data(tmp_path, inputs, outputs):
 
 def test_up_to_week_filters_rows(tmp_path):
     initial_data(tmp_path)
-    append_observation(tmp_path, 1, [0.4, 0.5], 13.0, week=2)
-    append_observation(tmp_path, 1, [0.6, 0.7], 14.0, week=3)
+    append_observation(tmp_path, 1, [0.4, 0.5], 13.0, week=1)
+    append_observation(tmp_path, 1, [0.6, 0.7], 14.0, week=2)
 
     everything = load_observations(tmp_path, 1)
-    assert set(everything.weeks.tolist()) == {1, 2, 3}
-    assert len(load_observations(tmp_path, 1, up_to_week=3).inputs) == 12
-    through_two = load_observations(tmp_path, 1, up_to_week=2)
-    assert len(through_two.inputs) == 11
-    assert through_two.weeks.max() == 2
-    assert len(load_observations(tmp_path, 1, up_to_week=1).inputs) == 10
+    assert set(everything.weeks.tolist()) == {0, 1, 2}
+    assert len(load_observations(tmp_path, 1, up_to_week=2).inputs) == 12
+    through_one = load_observations(tmp_path, 1, up_to_week=1)
+    assert len(through_one.inputs) == 11
+    assert through_one.weeks.max() == 1
+    assert len(load_observations(tmp_path, 1, up_to_week=0).inputs) == 10
 
 
 def test_weekly_folder_infers_week(tmp_path):
     initial_data(tmp_path)
-    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_2")
+    inputs_path, outputs_path, predictions_path = write_week(tmp_path / "week_1")
 
     imported = append_weekly_batch(tmp_path, inputs_path, outputs_path, predictions_path)[1]
 
-    assert imported.weeks[-1] == 2
-    assert load_observations(tmp_path, 1).weeks[-1] == 2
+    assert imported.weeks[-1] == 1
+    assert load_observations(tmp_path, 1).weeks[-1] == 1
 
 
 def test_missing_week_labels_are_rejected(tmp_path):
@@ -388,15 +388,36 @@ def test_wrong_count_and_invalid_append(tmp_path):
     observations = load_observations(tmp_path, 1)
     assert len(observations.inputs) == 9
     initial_data_arrays = Observations(
-        np.zeros((2, 2)), np.array([1, 2]), 2, weeks=np.ones(2, dtype=int),
+        np.zeros((2, 2)), np.array([1, 2]), 2, weeks=np.zeros(2, dtype=int),
     )
     with pytest.raises(ValueError, match="dimension"):
-        initial_data_arrays.with_observation([0.1], 3, week=2)
+        initial_data_arrays.with_observation([0.1], 3, week=1)
     with pytest.raises(ValueError, match="within"):
-        initial_data_arrays.with_observation([0.1, 1], 3, week=2)
+        initial_data_arrays.with_observation([0.1, 1], 3, week=1)
     with pytest.raises(ValueError, match="finite"):
-        initial_data_arrays.with_observation([0.1, 0.2], float("nan"), week=2)
-    with pytest.raises(ValueError, match="Week must be a positive integer"):
-        initial_data_arrays.with_observation([0.1, 0.2], 3, week=0)
+        initial_data_arrays.with_observation([0.1, 0.2], float("nan"), week=1)
+    with pytest.raises(ValueError, match="Week must be a nonnegative integer"):
+        initial_data_arrays.with_observation([0.1, 0.2], 3, week=-1)
 
 
+def test_initial_observations_and_explicit_week_zero_are_supported(tmp_path):
+    initial_data(tmp_path)
+    observations = load_observations(tmp_path, 1, up_to_week=0)
+    np.testing.assert_array_equal(observations.weeks, np.zeros(10, dtype=int))
+    updated = observations.with_observation([0.4, 0.5], 13., week=0)
+    assert updated.weeks[-1] == 0
+    assert len(updated.through_week(0).inputs) == 11
+
+
+@pytest.mark.parametrize("week", [-1, True, 0.5])
+def test_invalid_week_labels_are_rejected(week):
+    observations = Observations([[0.1, 0.2]], [1.], 2)
+    with pytest.raises(ValueError, match="Week must be a nonnegative integer"):
+        observations.through_week(week)
+    with pytest.raises(ValueError, match="Week must be a nonnegative integer"):
+        observations.with_observation([0.3, 0.4], 2., week=week)
+
+
+def test_negative_stored_week_labels_are_rejected():
+    with pytest.raises(ValueError, match="Weeks must contain one nonnegative integer"):
+        Observations([[0.1, 0.2]], [1.], 2, weeks=np.array([-1]))
