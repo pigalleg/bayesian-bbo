@@ -288,6 +288,11 @@ def _load_predictions(path: Path) -> dict:
     )
 
 
+def load_predictions(path: Path) -> dict:
+    """Read and validate saved predictions, including optional acquisition metadata."""
+    return _load_predictions(Path(path))
+
+
 def save_predictions(
     expected_outputs,
     suggested_points,
