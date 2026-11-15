@@ -5,11 +5,60 @@ import yaml
 from bayesian_bbo.acquisition import expected_improvement
 from bayesian_bbo import CONFIG
 from bayesian_bbo.data import Observations
-from bayesian_bbo.optimisation import BayesianOptimizer, OptimisationConfig, remaining_budget
+from bayesian_bbo.optimisation import BayesianOptimizer, OptimisationConfig, find_prediction_regions, remaining_budget
 from bayesian_bbo.settings import CONFIG_PATH, load_config
 from bayesian_bbo.submission import format_submission
 from bayesian_bbo.surrogate import fit_surrogate
 from sklearn.gaussian_process.kernels import RBF
+
+
+def test_prediction_regions_are_ranked_separated_and_reproducible():
+    from scipy.stats import qmc
+
+    calls = []
+
+    def predict(points):
+        calls.append(len(points))
+        return points[:, 0] + 2 * points[:, 1]
+
+    settings = dict(candidate_power=7, region_count=3, min_distance=0.4, batch_size=17, seed=9)
+    points, scores = find_prediction_regions(predict, 2, **settings)
+    assert max(calls) <= 17
+    assert sum(calls) == 128
+    pool = qmc.Sobol(d=2, scramble=True, seed=9).random_base2(7)
+    pool_scores = pool[:, 0] + 2 * pool[:, 1]
+    np.testing.assert_array_equal(points[0], pool[pool_scores.argmax()])
+    np.testing.assert_allclose(scores, points[:, 0] + 2 * points[:, 1])
+    assert len(points) == 3
+    assert np.all(np.diff(scores) <= 0)
+    distances = np.linalg.norm(points[:, None] - points[None, :], axis=2)
+    assert np.all(distances[np.triu_indices(3, 1)] >= 0.4)
+    repeated_points, repeated_scores = find_prediction_regions(predict, 2, **settings)
+    np.testing.assert_array_equal(points, repeated_points)
+    np.testing.assert_array_equal(scores, repeated_scores)
+
+
+def test_prediction_regions_allow_fewer_representatives():
+    points, scores = find_prediction_regions(
+        lambda points: points[:, 0], 1, candidate_power=3, min_distance=2,
+    )
+    assert points.shape == (1, 1)
+    assert scores.shape == (1,)
+
+
+@pytest.mark.parametrize("settings", [{"dimension": 0}, {"candidate_power": -1},
+                                     {"region_count": 0}, {"batch_size": 0},
+                                     {"min_distance": 0}, {"min_distance": float("nan")}])
+def test_prediction_regions_reject_invalid_settings(settings):
+    with pytest.raises(ValueError):
+        find_prediction_regions(lambda points: points[:, 0], **{"dimension": 2, **settings})
+
+
+@pytest.mark.parametrize("predict", [lambda points: np.zeros((len(points), 1)),
+                                    lambda points: np.full(len(points), np.nan)])
+def test_prediction_regions_reject_invalid_predictions(predict):
+    with pytest.raises(ValueError, match="finite scalar"):
+        find_prediction_regions(predict, 2, candidate_power=2)
 
 
 def test_shared_config_loads_yaml_values(tmp_path):

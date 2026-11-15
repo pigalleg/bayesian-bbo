@@ -1,13 +1,81 @@
 """Plot measured best-so-far values; never infer unmeasured outcomes."""
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 from .data import Observations
 from .optimisation import BayesianOptimizer
+
+
+def plot_prediction_planes(
+    predict: Callable[[np.ndarray], np.ndarray],
+    reference_points: np.ndarray,
+    *,
+    input_pair: tuple[int, int] = (0, 1),
+    reference_labels: Sequence[str] | None = None,
+    quantity_labels: Sequence[str] = ("Predicted output",),
+    grid_size: int = 50,
+):
+    """Plot unit-cube conditional planes with one reference per row.
+
+    predict returns shape (rows, quantities). Each quantity has a color scale
+    shared across references. Stars mark reference coordinates, not outcomes.
+    All coordinates outside input_pair remain fixed at each row's reference.
+    """
+    references = np.asarray(reference_points, dtype=float)
+    if (references.ndim != 2 or not len(references) or references.shape[1] < 2
+            or not np.all(np.isfinite(references)) or np.any((references < 0) | (references > 1))):
+        raise ValueError("reference_points must be nonempty finite unit-cube rows with dimension >= 2")
+    if (len(input_pair) != 2 or len(set(input_pair)) != 2
+            or any(isinstance(index, bool) or not isinstance(index, int)
+                   or not 0 <= index < references.shape[1] for index in input_pair)):
+        raise ValueError("input_pair must contain two distinct valid input indices")
+    if isinstance(grid_size, bool) or not isinstance(grid_size, int) or grid_size < 2:
+        raise ValueError("grid_size must be an integer >= 2")
+    labels = list(reference_labels) if reference_labels is not None else [
+        f"Reference {index + 1}" for index in range(len(references))
+    ]
+    if len(labels) != len(references) or not len(quantity_labels):
+        raise ValueError("Provide one reference label per row and at least one quantity label")
+    horizontal, vertical = np.meshgrid(np.linspace(0, 1, grid_size), np.linspace(0, 1, grid_size))
+    plane_points = np.repeat(references[:, None, :], grid_size ** 2, axis=1)
+    plane_points[:, :, input_pair[0]] = horizontal.ravel()
+    plane_points[:, :, input_pair[1]] = vertical.ravel()
+    predictions = np.asarray(predict(plane_points.reshape(-1, references.shape[1])), dtype=float)
+    expected_shape = (len(references) * grid_size ** 2, len(quantity_labels))
+    if predictions.shape != expected_shape or not np.all(np.isfinite(predictions)):
+        raise ValueError("predict must return finite values with shape (rows, quantities)")
+    surfaces = predictions.reshape(len(references), grid_size, grid_size, len(quantity_labels))
+    figure, axes = plt.subplots(
+        len(references), len(quantity_labels), squeeze=False,
+        figsize=(4.5 * len(quantity_labels), 3.4 * len(references)),
+        sharex=True, sharey=True, layout="constrained",
+    )
+    for column, quantity in enumerate(quantity_labels):
+        lower = float(surfaces[:, :, :, column].min())
+        upper = float(surfaces[:, :, :, column].max())
+        if lower == upper:
+            padding = max(abs(lower), 1.0) * 1e-6
+            lower, upper = lower - padding, upper + padding
+        levels = np.linspace(lower, upper, 21)
+        for row, reference in enumerate(references):
+            axis = axes[row, column]
+            contours = axis.contourf(horizontal, vertical, surfaces[row, :, :, column], levels=levels)
+            axis.scatter(*reference[list(input_pair)], marker="*", s=110,
+                         color="white", edgecolors="black", label="Reference")
+            axis.set(xlim=(0, 1), ylim=(0, 1), aspect="equal")
+            if row == 0:
+                axis.set_title(quantity)
+            if column == 0:
+                axis.set_ylabel(f"{labels[row]}\nInput {input_pair[1] + 1}")
+            if row == len(references) - 1:
+                axis.set_xlabel(f"Input {input_pair[0] + 1}")
+        figure.colorbar(contours, ax=list(axes[:, column]), label=quantity, shrink=0.8)
+    figure.suptitle("Conditional planes: other inputs fixed at each reference; stars mark references")
+    return figure, axes
 
 
 def plot_convergence(observations: Observations, initial_count: int):
@@ -23,26 +91,43 @@ def plot_convergence(observations: Observations, initial_count: int):
 def plot_optimum_progress(
     weeks: Sequence[int],
     function_ids: Sequence[int],
-    previous_best: np.ndarray,
+    actual_outputs: np.ndarray,
     expected_best: np.ndarray,
     observed_best: np.ndarray,
+    *,
+    expected_outputs: np.ndarray | None = None,
+    stds: np.ndarray | None = None,
 ):
-    """Plot best-so-far per function; the arrays have shape (functions, weeks)."""
+    """Plot actual outputs and expected/observed best-so-far per function.
+
+    The arrays have shape (functions, weeks). Observed-best labels use six
+    significant digits; actual outputs may decrease from one week to the next.
+    Supply saved expected_outputs and stds together to draw the approximate
+    Gaussian 95% predictive band (mean +/- 1.96 std), not a band around best-so-far.
+    """
     if not weeks or not function_ids:
         raise ValueError("Provide at least one week and one function")
     shape = (len(function_ids), len(weeks))
-    previous = np.asarray(previous_best, dtype=float)
+    actual = np.asarray(actual_outputs, dtype=float)
     expected = np.asarray(expected_best, dtype=float)
     observed = np.asarray(observed_best, dtype=float)
-    if {previous.shape, expected.shape, observed.shape} != {shape}:
-        raise ValueError("Best-so-far arrays must have shape (functions, weeks)")
-    if not np.all(np.isfinite(previous) & np.isfinite(expected) & np.isfinite(observed)):
-        raise ValueError("Best-so-far values must be finite")
-    tolerance = 1e-9 * (1 + np.abs(previous))
-    if np.any(expected < previous - tolerance):
-        raise ValueError("Expected best must not be below the previous best")
-    if np.any(observed < previous - tolerance):
-        raise ValueError("Observed best must not be below the previous best")
+    if {actual.shape, expected.shape, observed.shape} != {shape}:
+        raise ValueError("Output arrays must have shape (functions, weeks)")
+    if not np.all(np.isfinite(actual) & np.isfinite(expected) & np.isfinite(observed)):
+        raise ValueError("Output values must be finite")
+    tolerance = 1e-9 * (1 + np.abs(actual))
+    if np.any(observed < actual - tolerance):
+        raise ValueError("Observed best must not be below the actual output")
+    if (expected_outputs is None) != (stds is None):
+        raise ValueError("Provide expected outputs and standard deviations together")
+    mean = uncertainty = None
+    if expected_outputs is not None:
+        mean = np.asarray(expected_outputs, dtype=float)
+        uncertainty = np.asarray(stds, dtype=float)
+        if mean.shape != shape or uncertainty.shape != shape:
+            raise ValueError("Prediction arrays must have shape (functions, weeks)")
+        if not np.all(np.isfinite(mean) & np.isfinite(uncertainty)) or np.any(uncertainty < 0):
+            raise ValueError("Predictions must be finite and standard deviations nonnegative")
 
     rows = math.ceil(len(function_ids) / 2)
     figure, axes = plt.subplots(rows, 2, figsize=(14, 4 * rows), squeeze=False)
@@ -50,46 +135,78 @@ def plot_optimum_progress(
     for index, (function_id, ax) in enumerate(zip(function_ids, panels)):
         ax.plot(
             weeks,
-            previous[index],
+            actual[index],
             linestyle="--",
             color="gray",
             linewidth=2.5,
-            label="Previous best",
+            marker=".",
+            label="Actual output",
         )
         ax.plot(weeks, expected[index], marker="o", label="Expected best")
-        ax.plot(weeks, observed[index], marker="s", label="Observed best")
-        ax.set(title=f"Function {function_id}", xlabel="Week", ylabel="Best-so-far", xticks=list(weeks))
+        observed_line, = ax.plot(weeks, observed[index], marker="s", label="Observed best")
+        if mean is not None and uncertainty is not None:
+            mean_line, = ax.plot(
+                weeks, mean[index], linestyle=":", color="C2", label="Predicted mean",
+            )
+            ax.fill_between(
+                weeks,
+                mean[index] - 1.96 * uncertainty[index],
+                mean[index] + 1.96 * uncertainty[index],
+                color=mean_line.get_color(),
+                alpha=0.18,
+                label="Approx. 95% predictive band",
+            )
+        for week, value in zip(weeks, observed[index]):
+            ax.annotate(
+                f"{value:.6g}",
+                xy=(week, value),
+                xytext=(0, 8),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color=observed_line.get_color(),
+            )
+        ax.set(title=f"Function {function_id}", xlabel="Week", ylabel="Output", xticks=list(weeks))
         ax.grid(True, alpha=0.3)
     for ax in panels[len(function_ids):]:
         ax.set_visible(False)
     panels[0].legend()
-    figure.suptitle("Best-so-far: previous, expected, and observed")
+    figure.suptitle("Actual output and best-so-far: expected and observed")
     figure.tight_layout()
     return figure, axes
 
 
 def plot_calibration(standardised_residuals: Mapping[int, Sequence[float]]):
-    """Strip plot of standardised residuals per function, with reference lines at 0, +/-1, and +/-2."""
+    """Plot each function's standardised residuals on its own y-axis."""
     if not standardised_residuals:
         raise ValueError("Provide residuals for at least one function")
     function_ids = list(standardised_residuals)
-    columns = []
+    residuals = []
     for function_id in function_ids:
         values = np.asarray(standardised_residuals[function_id], dtype=float)
         if values.ndim != 1 or not len(values) or not np.all(np.isfinite(values)):
             raise ValueError(f"Residuals for function {function_id} must be a nonempty finite list")
-        columns.append(values)
+        residuals.append(values)
 
-    figure, ax = plt.subplots(figsize=(10, 5))
-    for position, values in enumerate(columns, start=1):
-        ax.scatter(np.full(len(values), position), values, color="C0", alpha=0.7)
-    for level, style in ((0, "-"), (1, ":"), (-1, ":"), (2, "--"), (-2, "--")):
-        ax.axhline(level, color="gray", linestyle=style, linewidth=1)
-    ax.set_xticks(range(1, len(function_ids) + 1), labels=[f"Function {function_id}" for function_id in function_ids])
-    ax.set(ylabel="(observed - expected) / std", title="Calibration of expected outputs")
-    ax.grid(True, axis="y", alpha=0.3)
+    figure, axes = plt.subplots(
+        1, len(function_ids), figsize=(4.5 * len(function_ids), 5), squeeze=False,
+        sharey=False,
+    )
+    axes = axes[0]
+    for function_id, values, ax in zip(function_ids, residuals, axes):
+        observations = np.arange(1, len(values) + 1)
+        ax.scatter(observations, values, color="C0", alpha=0.7)
+        for level, style in ((0, "-"), (1, ":"), (-1, ":"), (2, "--"), (-2, "--")):
+            ax.axhline(level, color="gray", linestyle=style, linewidth=1)
+        ax.set(
+            title=f"Function {function_id}", xlabel="Observation",
+            ylabel="(observed - expected) / std",
+            xticks=observations,
+        )
+        ax.grid(True, axis="y", alpha=0.3)
     figure.tight_layout()
-    return figure, ax
+    return figure, axes
 
 def _candidate_prediction(optimizer, candidate, expected_mean, expected_std, expected_ei=None):
     if candidate is None:

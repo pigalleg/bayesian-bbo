@@ -132,6 +132,10 @@ The separate live example searches 1,000,000 candidates and passes the returned 
 
 [week_2/03_optimum_progress.ipynb](../notebooks/week_2/03_optimum_progress.ipynb) compares saved `expected_best_outputs` against actual best-so-far values from the observation history. These historical expectations must not be replaced by predictions fitted using the outcomes being compared.
 
+`plot_optimum_progress(weeks, function_ids, actual_outputs, expected_best, observed_best)` plots each week's actual evaluated output alongside expected and observed best-so-far. Pass the history's `observed_output` values as `actual_outputs`, not `previous_best`; actual outputs can fall even when best-so-far stays constant. Observed-best points are annotated with six significant digits.
+
+Pass `expected_outputs=...` and `stds=...` together to add the predicted mean and a shaded approximate 95% Gaussian predictive band, `mean +/- 1.96 * std`. These `(functions, weeks)` arrays use saved pre-evaluation `expected_mean` and `expected_std` from the history, not `expected_best`. Compare actual outputs to this band at each week's marker; shading between weeks is a visual connection, not a prediction for intermediate weeks. Nominal 95% coverage depends on the surrogate's calibration.
+
 ## Rules to keep
 
 - Never edit `all_observations.npz` by hand; use `append_weekly_batch` or `append_observation`.

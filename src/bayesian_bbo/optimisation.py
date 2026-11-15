@@ -7,6 +7,7 @@ from typing import Callable
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Kernel
+from scipy.stats import qmc
 
 from .acquisition import expected_improvement, upper_confidence_bound
 from .data import FUNCTION_SPECS, Observations
@@ -47,6 +48,48 @@ def remaining_budget(observations: Observations, function_id: int, total_budget:
     if isinstance(total_budget, bool) or not isinstance(total_budget, int) or total_budget < 0:
         raise ValueError("Total budget must be a nonnegative integer")
     return max(0, total_budget - len(observations.inputs))
+
+
+def find_prediction_regions(
+    predict: Callable[[np.ndarray], np.ndarray],
+    dimension: int,
+    *,
+    candidate_power: int = 15,
+    region_count: int = 3,
+    min_distance: float = 0.5,
+    batch_size: int = 4096,
+    seed: int | None = CONFIG["random_state"],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Greedily select separated, high-prediction Sobol representatives in [0, 1).
+
+    Distance is Euclidean in the full unit cube. These are finite-pool model
+    diagnostics, not identified basins, certified maxima, or measured outcomes.
+    Fewer than region_count points may satisfy the requested separation.
+    """
+    for name, value, minimum in (
+        ("dimension", dimension, 1), ("candidate_power", candidate_power, 0),
+        ("region_count", region_count, 1), ("batch_size", batch_size, 1),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"{name} must be an integer >= {minimum}")
+    if not np.isfinite(min_distance) or min_distance <= 0:
+        raise ValueError("min_distance must be finite and positive")
+    pool = qmc.Sobol(d=dimension, scramble=True, seed=seed).random_base2(candidate_power)
+    scores = np.empty(len(pool))
+    for start in range(0, len(pool), batch_size):
+        batch = pool[start:start + batch_size]
+        values = np.asarray(predict(batch), dtype=float)
+        if values.shape != (len(batch),) or not np.all(np.isfinite(values)):
+            raise ValueError("predict must return one finite scalar per input row")
+        scores[start:start + len(batch)] = values
+    ranked = np.argsort(-scores, kind="stable")
+    selected: list[int] = []
+    for index in ranked:
+        if not selected or np.all(np.linalg.norm(pool[selected] - pool[index], axis=1) >= min_distance):
+            selected.append(int(index))
+            if len(selected) == region_count:
+                break
+    return pool[selected].copy(), scores[selected].copy()
 
 
 class BayesianOptimizer:

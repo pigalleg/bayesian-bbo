@@ -15,6 +15,7 @@ from bayesian_bbo.visualisation import (  # noqa: E402
     plot_gp_2d,
     plot_gp_slices,
     plot_optimum_progress,
+    plot_prediction_planes,
 )
 
 
@@ -31,6 +32,43 @@ def progress_arrays():
     return previous, expected, observed
 
 
+def test_prediction_planes_fix_other_inputs_and_share_column_scales():
+    references = np.array([[0.2, 0.3, 0.4], [0.8, 0.7, 0.9]])
+    received = []
+
+    def predict(points):
+        received.append(points.copy())
+        return np.column_stack((points.sum(axis=1), np.zeros(len(points))))
+
+    figure, axes = plot_prediction_planes(
+        predict, references, input_pair=(0, 2), grid_size=5,
+        reference_labels=["Incumbent", "Region 1"], quantity_labels=["Mean", "Constant"],
+    )
+    assert axes.shape == (2, 2)
+    assert len(figure.axes) == 6
+    planes = received[0].reshape(2, 25, 3)
+    np.testing.assert_array_equal(planes[:, :, 1], np.repeat(references[:, 1, None], 25, axis=1))
+    assert planes[:, :, 0].min() == 0 and planes[:, :, 0].max() == 1
+    assert planes[:, :, 2].min() == 0 and planes[:, :, 2].max() == 1
+    for column in range(2):
+        assert axes[0, column].collections[0].get_clim() == axes[1, column].collections[0].get_clim()
+    np.testing.assert_allclose(axes[1, 0].collections[-1].get_offsets(), [[0.8, 0.9]])
+    np.testing.assert_array_equal(references, [[0.2, 0.3, 0.4], [0.8, 0.7, 0.9]])
+    figure.canvas.draw()
+
+
+@pytest.mark.parametrize("settings", [{"input_pair": (0, 0)}, {"input_pair": (0, 3)},
+                                     {"grid_size": 1}, {"reference_labels": ["Only one"]}])
+def test_prediction_planes_reject_invalid_settings(settings):
+    with pytest.raises(ValueError):
+        plot_prediction_planes(lambda points: points[:, :1], np.full((2, 3), 0.5), **settings)
+
+
+def test_prediction_planes_reject_invalid_predictions():
+    with pytest.raises(ValueError, match="finite values"):
+        plot_prediction_planes(lambda points: np.zeros(len(points)), [[0.5, 0.5]])
+
+
 def test_convergence_plots_observed_running_best():
     observations = Observations(inputs=[[0.1], [0.2]], outputs=[0.5, 1.0], dimension=1)
     _, ax = plot_convergence(observations, 1)
@@ -43,6 +81,10 @@ def test_optimum_progress_draws_three_series_per_function():
     panels = axes.ravel()
     assert len(panels) == 2
     assert all(len(ax.lines) == 3 for ax in panels)
+    for index, ax in enumerate(panels):
+        np.testing.assert_array_equal(ax.lines[0].get_ydata(), previous[index])
+        assert [line.get_label() for line in ax.lines] == ["Actual output", "Expected best", "Observed best"]
+        assert ax.get_ylabel() == "Output"
 
 
 def test_optimum_progress_hides_unused_panels():
@@ -53,18 +95,38 @@ def test_optimum_progress_hides_unused_panels():
     assert not panels[3].get_visible()
 
 
-def test_optimum_progress_rejects_expected_below_previous():
-    previous, expected, observed = progress_arrays()
-    expected[0, 0] = 0.5
-    with pytest.raises(ValueError, match="Expected best"):
-        plot_optimum_progress([2, 3], [1, 2], previous, expected, observed)
+def test_optimum_progress_annotates_each_observed_best():
+    previous = np.array([[0.0, 0.0, 0.0], [-4.0, -4.0, -4.0]])
+    observed = np.array([[0.00001234567, 9.8811423, 1234567.0], [-3.5, -3.5, -1.2345678]])
+    _, axes = plot_optimum_progress([1, 2, 3], [1, 2], previous, previous, observed)
+    expected_labels = [["1.23457e-05", "9.88114", "1.23457e+06"], ["-3.5", "-3.5", "-1.23457"]]
+    for index, ax in enumerate(axes.ravel()):
+        assert [text.get_text() for text in ax.texts] == expected_labels[index]
+        assert [text.xy for text in ax.texts] == list(zip([1, 2, 3], observed[index]))
+        assert all(text.get_color() == ax.lines[2].get_color() for text in ax.texts)
 
 
-def test_optimum_progress_rejects_observed_below_previous():
+def test_optimum_progress_allows_actual_output_above_expectation_and_weekly_declines():
+    actual = np.array([[3.0, -2.0]])
+    expected = np.array([[2.0, 3.5]])
+    observed = np.array([[3.0, 3.0]])
+    _, axes = plot_optimum_progress([1, 2], [1], actual, expected, observed)
+    np.testing.assert_array_equal(axes[0, 0].lines[0].get_ydata(), actual[0])
+
+
+def test_optimum_progress_rejects_observed_best_below_actual_output():
     previous, expected, observed = progress_arrays()
     observed[1, 1] = -5.0
     with pytest.raises(ValueError, match="Observed best"):
         plot_optimum_progress([2, 3], [1, 2], previous, expected, observed)
+
+
+@pytest.mark.parametrize("array_index", [0, 1, 2])
+def test_optimum_progress_rejects_nonfinite_outputs(array_index):
+    arrays = progress_arrays()
+    arrays[array_index][0, 0] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        plot_optimum_progress([2, 3], [1, 2], *arrays)
 
 
 def test_optimum_progress_rejects_wrong_shape():
@@ -73,9 +135,44 @@ def test_optimum_progress_rejects_wrong_shape():
         plot_optimum_progress([2], [1, 2], previous, expected, observed)
 
 
+def test_optimum_progress_band_uses_predicted_mean_not_expected_best():
+    mean = np.array([[4093.3, -2.0]])
+    stds = np.array([[167.5, 0.0]])
+    _, axes = plot_optimum_progress(
+        [1, 2], [5], [[2060.4, -3.0]], [[4500.0, 4600.0]], [[3949.4, 3949.4]],
+        expected_outputs=mean, stds=stds,
+    )
+    ax = axes[0, 0]
+    np.testing.assert_array_equal(ax.lines[3].get_ydata(), mean[0])
+    vertices = ax.collections[0].get_paths()[0].vertices
+    for week, lower, upper in [(1, 3765.0, 4421.6), (2, -2.0, -2.0)]:
+        values = vertices[vertices[:, 0] == week, 1]
+        assert values.min() == pytest.approx(lower)
+        assert values.max() == pytest.approx(upper)
+    assert ax.collections[0].get_label() == "Approx. 95% predictive band"
+    assert len(ax.texts) == 2
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    ({"expected_outputs": [[1.0, 2.0]]}, "together"),
+    ({"stds": [[0.1, 0.2]]}, "together"),
+    ({"expected_outputs": [[1.0]], "stds": [[0.1, 0.2]]}, "shape"),
+    ({"expected_outputs": [[1.0, 2.0]], "stds": [[0.1]]}, "shape"),
+    ({"expected_outputs": [[np.nan, 2.0]], "stds": [[0.1, 0.2]]}, "finite"),
+    ({"expected_outputs": [[1.0, 2.0]], "stds": [[np.inf, 0.2]]}, "finite"),
+    ({"expected_outputs": [[1.0, 2.0]], "stds": [[-0.1, 0.2]]}, "nonnegative"),
+])
+def test_optimum_progress_validates_prediction_band(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        plot_optimum_progress([1, 2], [1], [[1, 2]], [[1, 2]], [[1, 2]], **kwargs)
+
+
 def test_calibration_plots_each_function():
-    _, ax = plot_calibration({1: [0.1, -1.2], 2: [0.5]})
-    assert len(ax.collections) == 2
+    _, axes = plot_calibration({1: [0.1, -1.2, 8.0], 2: [0.5]})
+    assert len(axes) == 2
+    assert len(axes[0].collections) == 1
+    assert len(axes[1].collections) == 1
+    assert not np.array_equal(axes[0].get_ylim(), axes[1].get_ylim())
 
 
 def test_calibration_rejects_nonfinite_residuals():
