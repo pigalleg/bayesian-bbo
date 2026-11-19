@@ -40,6 +40,18 @@ The cycle repeats for each new week: predictions are saved before evaluation, re
 5. **Import the batch.** `append_weekly_batch` reads `inputs.json`, `outputs.json`, and `predictions.json` together and appends the rows to each function's `all_observations.npz`. The week comes from the folder name (`week_N` gives week $N$). Re-importing identical rows is a no-op. Conflicting outputs or predictions are rejected.
 6. **Reuse.** Notebooks call `load_observations(root, function_id, up_to_week=N)` to get the data available through week $N$. Analysis notebooks read the same aggregate.
 
+### Automatic weekly import
+
+Start the local watcher from the repository root and keep it running:
+
+```bash
+.venv/bin/python scripts/watch_weekly_updates.py
+```
+
+In `data/weekly_updates/week_N/`, place the evaluator's cumulative `inputs.txt` and `outputs.txt`, each containing exactly N lists starting at week 1. The watcher processes the last list only, once both files have remained unchanged for a polling interval. The week's existing `inputs.json` must match the text inputs, and its pre-evaluation `predictions.json` must exist. It creates `outputs.json` if needed and imports the batch into the per-function aggregates, then prints a confirmation. It checks existing eligible folders on startup, so it can also import updates that arrived while it was stopped.
+
+Identical imports are safe to repeat. Conflicting JSON or observations are reported as errors, not overwritten. If processing fails, the watcher reports the error and retries when a weekly input, output, or JSON file changes; restart it to retry after fixing other causes. It runs only while the command is active; stop it with Ctrl+C. Finish writing both text files before leaving them in the watched folder, and do not edit the evaluator exports while they are being imported. If an import fails after `outputs.json` is created, the JSON can remain even though the batch was not imported.
+
 ## Field reference
 
 ### `data/function_N/initial_inputs.npy` and `initial_outputs.npy`
