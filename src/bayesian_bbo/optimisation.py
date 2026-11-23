@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+from scipy.optimize import minimize
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Kernel
 from scipy.stats import qmc
 
-from .acquisition import expected_improvement, upper_confidence_bound
+from .acquisition import expected_improvement, log_expected_improvement, upper_confidence_bound
 from .data import FUNCTION_SPECS, Observations
 from .settings import CONFIG
 from .surrogate import KernelFactory, fit_surrogate
@@ -25,6 +26,9 @@ class OptimisationConfig:
     seed: int | None = CONFIG["random_state"]
     kernel: Kernel | KernelFactory | None = None
     best: float | None = None
+    search_strategy: str = "random"
+    lbfgs_restarts: int = 20
+    local_candidates: int = 1024
 
     def __post_init__(self) -> None:
         if isinstance(self.budget, bool) or not isinstance(self.budget, int) or self.budget < 0:
@@ -37,6 +41,22 @@ class OptimisationConfig:
             raise ValueError("Acquisition parameters must be finite and nonnegative")
         if self.best is not None and not np.isfinite(self.best):
             raise ValueError("Best must be finite when provided")
+        if not isinstance(self.search_strategy, str) or self.search_strategy not in {
+            "random", "sobol_lbfgs",
+        }:
+            raise ValueError("Search strategy must be 'random' or 'sobol_lbfgs'")
+        if (
+            isinstance(self.lbfgs_restarts, bool)
+            or not isinstance(self.lbfgs_restarts, int)
+            or self.lbfgs_restarts < 1
+        ):
+            raise ValueError("lbfgs_restarts must be a positive integer")
+        if (
+            isinstance(self.local_candidates, bool)
+            or not isinstance(self.local_candidates, int)
+            or self.local_candidates < 0
+        ):
+            raise ValueError("local_candidates must be a nonnegative integer")
 
 
 def remaining_budget(observations: Observations, function_id: int, total_budget: int = 20) -> int:
@@ -156,6 +176,9 @@ class BayesianOptimizer:
         """Return the suggested point, predictive mean, std, and configured acquisition score."""
         pool = self._candidate_pool()
         mean, std, acquisition = self.predict(pool)
+        if self.config.search_strategy == "sobol_lbfgs":
+            xi = float(self.acquisition_settings["xi"]) if self.config.acquisition == "ei" else None
+            return self._polish_candidates(pool, mean, std, xi=xi)
         selected = int(np.argmax(acquisition))
         return (
             pool[selected].copy(), float(mean[selected]), float(std[selected]),
@@ -186,6 +209,9 @@ class BayesianOptimizer:
         suggestions = []
         for xi in xis:
             scores = expected_improvement(mean, std, best, float(xi))
+            if self.config.search_strategy == "sobol_lbfgs":
+                suggestions.append(self._polish_candidates(pool, mean, std, xi=float(xi)))
+                continue
             selected = int(np.argmax(scores))
             suggestions.append((
                 pool[selected].copy(), float(mean[selected]), float(std[selected]),
@@ -196,6 +222,28 @@ class BayesianOptimizer:
     def _candidate_pool(self) -> np.ndarray:
         if self.remaining <= 0:
             raise RuntimeError("Evaluation budget exhausted")
+        if self.config.search_strategy == "sobol_lbfgs":
+            exponent = (self.config.candidates - 1).bit_length()
+            pool = qmc.Sobol(
+                d=self.observations.dimension, scramble=True,
+                rng=np.random.default_rng(self.config.seed),
+            ).random_base2(exponent)[:self.config.candidates]
+            if self.config.local_candidates:
+                count = self.config.local_candidates
+                scales = np.full(count, 0.15)
+                scales[:count // 2] = 0.05
+                local = self._random.normal(
+                    loc=self.observations.best_input, scale=scales[:, None],
+                )
+                pool = np.vstack((pool, local))
+            pool = np.clip(np.round(np.clip(pool, 0.0, 0.999999), 6), 0.0, 0.999999)
+            unused = np.ones(len(pool), dtype=bool)
+            for point in self.observations.inputs:
+                unused &= ~np.all(pool == point, axis=1)
+            pool = pool[unused]
+            if len(pool):
+                return pool
+            raise RuntimeError("Could not find an unused candidate")
         for _ in range(10):
             pool = self._random.integers(0, 1_000_000, size=(self.config.candidates, self.observations.dimension)) / 1_000_000
             unused = np.ones(len(pool), dtype=bool)
@@ -205,6 +253,78 @@ class BayesianOptimizer:
             if len(pool):
                 return pool
         raise RuntimeError("Could not find an unused candidate")
+
+    def _polish_candidates(
+        self,
+        pool: np.ndarray,
+        mean: np.ndarray,
+        std: np.ndarray,
+        *,
+        xi: float | None = None,
+    ) -> tuple[np.ndarray, float, float, float]:
+        """Polish top screening points and return the best unused snapped candidate."""
+        settings = self.acquisition_settings
+        if self.config.acquisition == "ei":
+            best = float(settings["best"])
+            threshold = float(settings["xi"]) if xi is None else xi
+            ranking = log_expected_improvement(mean, std, best, threshold)
+        else:
+            best = 0.0
+            threshold = 0.0
+            ranking = upper_confidence_bound(mean, std, float(settings["kappa"]))
+        starts = np.argsort(-ranking, kind="stable")[:self.config.lbfgs_restarts]
+        bounds = [(0.0, 0.999999)] * self.observations.dimension
+
+        def objective(point: np.ndarray) -> float:
+            predicted_mean, predicted_std, _ = self.predict(np.asarray(point).reshape(1, -1))
+            if self.config.acquisition == "ei":
+                value = -float(log_expected_improvement(
+                    predicted_mean[0], predicted_std[0], best, threshold,
+                ))
+            else:
+                value = -float(upper_confidence_bound(
+                    predicted_mean[0], predicted_std[0], float(settings["kappa"]),
+                ))
+            return value if np.isfinite(value) else 1e100
+
+        candidates = [pool[int(starts[0])].copy()]
+        for index in starts:
+            result = minimize(
+                objective, pool[int(index)], method="L-BFGS-B", bounds=bounds,
+            )
+            if result.x.shape == (self.observations.dimension,) and np.all(np.isfinite(result.x)):
+                candidates.append(np.clip(np.round(result.x, 6), 0.0, 0.999999))
+
+        unique: list[np.ndarray] = []
+        for point in candidates:
+            snapped = np.clip(np.round(point, 6), 0.0, 0.999999)
+            if (
+                not np.any(np.all(self.observations.inputs == snapped, axis=1))
+                and not any(np.array_equal(snapped, existing) for existing in unique)
+            ):
+                unique.append(snapped)
+        if not unique:
+            raise RuntimeError("Could not find an unused polished candidate")
+
+        candidate_array = np.asarray(unique)
+        final_mean, final_std, configured_scores = self.predict(candidate_array)
+        if self.config.acquisition == "ei":
+            scores = expected_improvement(final_mean, final_std, best, threshold)
+            if np.max(scores) == 0.0:
+                tie_break = log_expected_improvement(final_mean, final_std, best, threshold)
+                selected = int(np.argmax(tie_break))
+            else:
+                selected = int(np.argmax(scores))
+        else:
+            scores = upper_confidence_bound(final_mean, final_std, float(settings["kappa"]))
+            selected = int(np.argmax(scores))
+        score = float(scores[selected])
+        if self.config.acquisition == "ei" and xi is None:
+            score = float(configured_scores[selected])
+        return (
+            candidate_array[selected].copy(), float(final_mean[selected]),
+            float(final_std[selected]), score,
+        )
 
     def observe(self, point: np.ndarray, value: float) -> Observations:
         if self.remaining <= 0:

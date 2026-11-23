@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import yaml
 
-from bayesian_bbo.acquisition import expected_improvement
+from bayesian_bbo.acquisition import expected_improvement, log_expected_improvement
 from bayesian_bbo import CONFIG
 from bayesian_bbo.data import Observations
 from bayesian_bbo.optimisation import BayesianOptimizer, OptimisationConfig, find_prediction_regions, remaining_budget
@@ -133,6 +133,21 @@ def test_optimizer_and_surrogate_defaults_use_shared_config():
     ],
 )
 def test_invalid_config(settings):
+    with pytest.raises(ValueError):
+        OptimisationConfig(**settings)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"search_strategy": "unknown"},
+        {"lbfgs_restarts": 0},
+        {"lbfgs_restarts": True},
+        {"local_candidates": -1},
+        {"local_candidates": True},
+    ],
+)
+def test_invalid_search_config(settings):
     with pytest.raises(ValueError):
         OptimisationConfig(**settings)
 
@@ -369,7 +384,140 @@ def test_candidate_pool_excludes_observed_points():
     pool = np.random.default_rng(4).integers(0, 1_000_000, size=(8, 1)) / 1_000_000
     observations = Observations(pool[:2], [0., 1.], 1)
     optimizer = BayesianOptimizer(observations, OptimisationConfig(candidates=8, seed=4))
+    assert optimizer.config.search_strategy == "random"
     np.testing.assert_array_equal(optimizer._candidate_pool(), pool[2:])
+
+
+def test_sobol_lbfgs_pool_and_suggestion_are_reproducible():
+    observations = Observations([[0.1], [0.3]], [0., 1.], 1)
+    config = OptimisationConfig(
+        candidates=17, seed=4, search_strategy="sobol_lbfgs", local_candidates=12,
+        lbfgs_restarts=3, kernel=RBF(length_scale=0.2, length_scale_bounds="fixed"),
+    )
+    first = BayesianOptimizer(observations, config)
+    second = BayesianOptimizer(observations, config)
+    np.testing.assert_array_equal(first._candidate_pool(), second._candidate_pool())
+    first = BayesianOptimizer(observations, config).suggest_with_prediction()
+    second = BayesianOptimizer(observations, config).suggest_with_prediction()
+    for actual, expected in zip(first, second):
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_sobol_lbfgs_candidates_are_snapped_bounded_and_unused():
+    observations = Observations([[0.1], [0.3]], [0., 1.], 1)
+    optimizer = BayesianOptimizer(
+        observations,
+        OptimisationConfig(
+            candidates=32, seed=7, search_strategy="sobol_lbfgs", local_candidates=20,
+            lbfgs_restarts=4, kernel=RBF(length_scale=0.2, length_scale_bounds="fixed"),
+        ),
+    )
+    pool = optimizer._candidate_pool()
+    assert np.all((pool >= 0.0) & (pool < 1.0))
+    np.testing.assert_array_equal(pool, np.round(pool, 6))
+    assert not np.any(np.all(pool[:, None] == observations.inputs[None, :, :], axis=2))
+
+    point, _, _, _ = optimizer.suggest_with_prediction()
+    assert np.all((point >= 0.0) & (point < 1.0))
+    np.testing.assert_array_equal(point, np.round(point, 6))
+    assert not np.any(np.all(observations.inputs == point, axis=1))
+
+
+def test_sobol_lbfgs_polishing_matches_or_improves_stage_one_ei():
+    observations = Observations(
+        [[0.05], [0.25], [0.5], [0.75], [0.95]],
+        [0.05, 0.45, 0.9, 0.45, 0.05],
+        1,
+    )
+    config = OptimisationConfig(
+        candidates=64, seed=13, search_strategy="sobol_lbfgs", local_candidates=0,
+        lbfgs_restarts=4, kernel=RBF(length_scale=0.2, length_scale_bounds="fixed"),
+    )
+    optimizer = BayesianOptimizer(observations, config)
+    pool = optimizer._candidate_pool()
+    _, _, stage_one_scores = optimizer.predict(pool)
+
+    point, mean, std, score = optimizer.suggest_with_prediction()
+
+    assert score >= np.max(stage_one_scores) - 1e-12
+    assert score == pytest.approx(expected_improvement(
+        np.array([mean]), np.array([std]), observations.best_output, config.xi,
+    )[0])
+    assert not np.any(np.all(observations.inputs == point, axis=1))
+
+
+@pytest.mark.parametrize("acquisition", ["ei", "ucb"])
+def test_sobol_lbfgs_suggest_supports_ei_and_ucb(acquisition):
+    observations = Observations([[0.1], [0.3], [0.7]], [0., 1., 0.2], 1)
+    config = OptimisationConfig(
+        candidates=32, seed=5, acquisition=acquisition, search_strategy="sobol_lbfgs",
+        local_candidates=8, lbfgs_restarts=3,
+        kernel=RBF(length_scale=0.2, length_scale_bounds="fixed"),
+    )
+    optimizer = BayesianOptimizer(observations, config)
+
+    point, mean, std, score = optimizer.suggest_with_prediction()
+
+    assert point.shape == (1,)
+    assert 0.0 <= point[0] < 1.0
+    np.testing.assert_array_equal(point, np.round(point, 6))
+    assert not np.any(np.all(observations.inputs == point, axis=1))
+    if acquisition == "ei":
+        assert score == pytest.approx(expected_improvement(
+            np.array([mean]), np.array([std]), observations.best_output, config.xi,
+        )[0])
+    else:
+        assert score == pytest.approx(mean + config.kappa * std)
+
+
+def test_sobol_lbfgs_ei_sweep_polishes_each_xi():
+    from bayesian_bbo import optimisation
+
+    observations = Observations([[0.1], [0.3], [0.7]], [0., 1., 0.2], 1)
+    fits = []
+    original_fit = optimisation.fit_surrogate
+
+    def tracked_fit(observations, seed, kernel):
+        fits.append(len(observations.inputs))
+        return original_fit(observations, seed, kernel)
+
+    optimizer = BayesianOptimizer(
+        observations,
+        OptimisationConfig(
+            candidates=32, seed=5, search_strategy="sobol_lbfgs", local_candidates=0,
+            lbfgs_restarts=3, kernel=RBF(length_scale=0.2, length_scale_bounds="fixed"),
+        ),
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(optimisation, "fit_surrogate", tracked_fit)
+        suggestions = optimizer.suggest_ei_sweep([0.0, 0.1, 0.3], batch_size=7)
+
+    assert len(suggestions) == 3
+    assert fits == [3]
+    for (point, mean, std, score), xi in zip(suggestions, [0.0, 0.1, 0.3]):
+        assert 0.0 <= point[0] < 1.0
+        np.testing.assert_array_equal(point, np.round(point, 6))
+        assert not np.any(np.all(observations.inputs == point, axis=1))
+        assert score == pytest.approx(expected_improvement(
+            np.array([mean]), np.array([std]), observations.best_output, xi,
+        )[0])
+
+
+def test_log_expected_improvement_matches_ei_ranking_and_stays_finite_in_tail():
+    z = np.array([-8.0, -5.0, -2.0, 0.0, 1.0, 3.0])
+    std = np.ones_like(z)
+    mean = z + 0.01
+    raw = expected_improvement(mean, std, 0.0, xi=0.01)
+    logged = log_expected_improvement(mean, std, 0.0, xi=0.01)
+    np.testing.assert_array_equal(np.argsort(raw), np.argsort(logged))
+    np.testing.assert_allclose(np.exp(logged[1:]), raw[1:], rtol=1e-12, atol=1e-30)
+
+    extreme_mean = np.array([-40.0, -1000.0])
+    extreme_raw = expected_improvement(extreme_mean, np.ones(2), 0.0, xi=0.0)
+    extreme_log = log_expected_improvement(extreme_mean, np.ones(2), 0.0, xi=0.0)
+    np.testing.assert_array_equal(extreme_raw, np.zeros(2))
+    assert np.all(np.isfinite(extreme_log))
+    assert extreme_log[0] > extreme_log[1]
 
 
 def test_remaining_budget_after_restart():

@@ -6,6 +6,7 @@
 - [Week 3 workflow](week-3-workflow.md) records the week-3 progress/calibration analysis, Week 4 candidate policy and exports.
 - [Week 4 workflow](week-4-workflow.md) records the week-4 analysis, alpha decisions, kernel choices, and verified Week 5 proposal.
 - [Week 5 workflow](week-5-workflow.md) records measured outcomes, notebook order, kernel/bound diagnostics, the Function 2 local GP experiment, and the verified Week 6 proposal and export safeguards.
+- [Week 6 workflow](week-6-workflow.md) records measured Week 6 outcomes, cumulative calibration, and the Weeks 1-6 per-function strategy summary.
 - [All-function surrogate diagnostics](../notebooks/week_5/02_all_functions_surrogate_diagnostics.ipynb) compares five kernels across all functions using shuffled folds and pre-week rolling-origin backtests.
 - [Length-scale cap sensitivity](../notebooks/week_5/03_length_scale_sensitivity.ipynb) plots maximized log marginal likelihood against the length-scale cap for all eight functions and five kernels using observations through Week 5.
 - [Length-scale lower-bound sensitivity](../notebooks/week_5/04_length_scale_lower_bound_sensitivity.ipynb) compares length-scale lower bounds from `0.001` down to `0.00001` with maximum length caps and noise bounds held fixed.
